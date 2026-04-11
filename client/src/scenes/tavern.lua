@@ -2,17 +2,22 @@ local ELT        = require("src.core.elt_color")
 local GS         = require("src.core.gamestate")
 local Adventurer = require("src.entities.adventurer")
 local CLASSES    = require("src.data.classes")
+local RACES      = require("src.data.races")
 
 local Tavern = {}
 
 -- ── Sub-state identifiers ─────────────────────────────────────────────────────
 local SUB = {
     MENU         = "menu",
-    CREATE_NAME  = "create_name",
+    CREATE_RACE  = "create_race",
     CREATE_STATS = "create_stats",
+    CREATE_NAME  = "create_name",
     ROSTER       = "roster",
     PARTY        = "party",
 }
+
+-- ── Ordered lists for display ─────────────────────────────────────────────────
+local ALL_RACES = { "human", "elf", "dwarf", "hobbit" }
 
 -- ── Layout constants ──────────────────────────────────────────────────────────
 local MAIN_LEFT    = 80
@@ -47,13 +52,39 @@ local menuSel      = 1
 local rosterSel    = 1
 local partySel     = 1
 local pendingName  = ""
+local pendingRace  = nil
 local pendingStats = nil
-local pendingClass = nil   -- classId chosen on the stats screen
-local classListSel = 1     -- index into Adventurer.CLASSES_ORDER
+local pendingClass = nil
+local raceListSel  = 1
+local classListSel = 1
 local blinkTimer   = 0
 local showCursor   = true
 local message      = nil
 local messageTimer = 0
+
+-- ── Stat roll animation ───────────────────────────────────────────────────────
+-- Stats are displayed in this order in the 2-column grid (row by row).
+local ANIM_ORDER   = { "str", "iq", "wis", "con", "agi", "cha", "hp" }
+-- Each stat stops spinning at this elapsed time (seconds).
+local ANIM_STOPS   = {  0.6,  0.85, 1.1,  1.35, 1.6,  1.85, 2.2  }
+
+local isRolling      = false
+local statAnimations = {}   -- key → { displayVal, finalVal, spinning, stopAt, elapsed, cycleTimer }
+
+local function startRollAnimation(stats)
+    isRolling    = true
+    statAnimations = {}
+    for i, key in ipairs(ANIM_ORDER) do
+        statAnimations[key] = {
+            displayVal = love.math.random(3, 18),
+            finalVal   = stats[key],
+            spinning   = true,
+            stopAt     = ANIM_STOPS[i],
+            elapsed    = 0,
+            cycleTimer = 0,
+        }
+    end
+end
 
 -- ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -65,6 +96,16 @@ end
 local function postMessage(text)
     message      = text
     messageTimer = 2.5
+end
+
+--- Returns true only when every stat required by the given class has finished animating.
+local function classStatsSettled(classId)
+    local class = CLASSES[classId]
+    for stat in pairs(class.requires or {}) do
+        local anim = statAnimations[stat]
+        if anim and anim.spinning then return false end
+    end
+    return true
 end
 
 local function statColor(value)
@@ -176,8 +217,10 @@ local function drawMenu()
 end
 
 local function drawCreateName()
+    local raceLabel  = pendingRace  and RACES[pendingRace].label  or "?"
     local classLabel = pendingClass and CLASSES[pendingClass].label or "Adventurer"
-    drawHeader("Name your " .. classLabel, "Human  ·  " .. classLabel)
+    drawHeader("Name your " .. raceLabel .. " " .. classLabel,
+        raceLabel .. "  ·  " .. classLabel)
 
     local labelY = CONTENT_TOP + 40
     love.graphics.setFont(Fonts.medium)
@@ -212,8 +255,57 @@ local function drawCreateName()
     drawFooter("ENTER  confirm     ESC  back to stats")
 end
 
+local function drawCreateRace()
+    drawHeader("Choose Your Race",
+        "Browse freely.  Costs " .. COST_CREATE .. " GP to roll stats once you choose.")
+
+    local STAT_ORDER = { "str", "iq", "wis", "con", "agi", "cha" }
+    local raceRowH   = 112
+
+    for i, raceId in ipairs(ALL_RACES) do
+        local race = RACES[raceId]
+        local sel  = (i == raceListSel)
+        local y    = CONTENT_TOP + (i - 1) * raceRowH
+
+        if sel then
+            love.graphics.setColor(ELT.SELECT_BG)
+            love.graphics.rectangle("fill", MAIN_LEFT, y - 4, MAIN_WIDTH, raceRowH - 8, 5)
+            love.graphics.setColor(ELT.SELECT_BORDER)
+            love.graphics.rectangle("line", MAIN_LEFT, y - 4, MAIN_WIDTH, raceRowH - 8, 5)
+        end
+
+        -- Race name.
+        love.graphics.setFont(Fonts.medium)
+        love.graphics.setColor(sel and ELT.HEADING_BRIGHT or ELT.HEADING)
+        love.graphics.print(race.label, MAIN_LEFT + 16, y + 6)
+
+        -- Description.
+        love.graphics.setFont(Fonts.small)
+        love.graphics.setColor(ELT.TEXT_DESC)
+        love.graphics.print(race.desc, MAIN_LEFT + 16, y + 34)
+
+        -- Stat modifiers.
+        local modX = MAIN_LEFT + 16
+        for _, key in ipairs(STAT_ORDER) do
+            local val = race.stat_bonus[key]
+            if val and val ~= 0 then
+                local sign = val > 0 and "+" or ""
+                love.graphics.setColor(val > 0 and ELT.STATUS_OK or ELT.STATUS_DEAD)
+                love.graphics.print(
+                    Adventurer.statLabel(key) .. " " .. sign .. val,
+                    modX, y + 58)
+                modX = modX + 110
+            end
+        end
+    end
+
+    drawPartyPanel()
+    drawFooter("UP / DOWN  navigate     ENTER  select race (" .. COST_CREATE .. " GP)     ESC  cancel")
+end
+
 local function drawCreateStats()
-    drawHeader("New Adventurer", "Reroll until a suitable class appears, then select it.")
+    local raceLabel = pendingRace and RACES[pendingRace].label or "?"
+    drawHeader("New " .. raceLabel, "Reroll until a suitable class appears, then select it.")
 
     local statKeys   = Adventurer.statKeys()
     local eligibility = Adventurer.classEligibility(pendingStats)
@@ -227,23 +319,29 @@ local function drawCreateStats()
         local x   = MAIN_LEFT + 30 + col * STATS_COL_W
         local y   = startY + row * 58
 
+        local anim       = statAnimations[key]
+        local displayVal = (anim and anim.spinning) and anim.displayVal or pendingStats[key]
+        local spinning   = anim and anim.spinning
+
         love.graphics.setFont(Fonts.medium)
         love.graphics.setColor(ELT.TEXT_SUBTITLE)
         love.graphics.print(Adventurer.statLabel(key), x, y)
-        love.graphics.setColor(statColor(pendingStats[key]))
-        love.graphics.print(tostring(pendingStats[key]), x + 70, y)
+        love.graphics.setColor(spinning and ELT.TEXT_FOOTER or statColor(pendingStats[key]))
+        love.graphics.print(tostring(displayVal), x + 70, y)
     end
 
     -- HP below the stat grid.
-    local hpY = startY + 3 * 58 + 8
+    local hpY   = startY + 3 * 58 + 8
+    local hpAnim = statAnimations["hp"]
+    local hpDisplay = (hpAnim and hpAnim.spinning) and hpAnim.displayVal or (pendingStats and pendingStats.hp)
     love.graphics.setColor(ELT.RULE)
     love.graphics.rectangle("fill", MAIN_LEFT + 30, hpY - 4, CLASS_X - MAIN_LEFT - 60, 1)
 
     love.graphics.setFont(Fonts.medium)
     love.graphics.setColor(ELT.TEXT_SUBTITLE)
     love.graphics.print("HP", MAIN_LEFT + 30, hpY + 4)
-    love.graphics.setColor(statColor(pendingStats.hp))
-    love.graphics.print(tostring(pendingStats.hp), MAIN_LEFT + 100, hpY + 4)
+    love.graphics.setColor((hpAnim and hpAnim.spinning) and ELT.TEXT_FOOTER or statColor(pendingStats.hp))
+    love.graphics.print(tostring(hpDisplay or "?"), MAIN_LEFT + 100, hpY + 4)
 
     -- Reroll cost note.
     love.graphics.setFont(Fonts.small)
@@ -262,7 +360,7 @@ local function drawCreateStats()
 
     for i, classId in ipairs(Adventurer.CLASSES_ORDER) do
         local class    = CLASSES[classId]
-        local eligible = eligibility[classId]
+        local eligible = eligibility[classId] and classStatsSettled(classId)
         local sel      = (i == classListSel)
         local y        = startY + 48 + (i - 1) * 96
 
@@ -286,7 +384,9 @@ local function drawCreateStats()
         love.graphics.setFont(Fonts.small)
         local reqX = CLASS_X
         for stat, minVal in pairs(class.requires) do
-            local met = (pendingStats[stat] or 0) >= minVal
+            local anim    = statAnimations[stat]
+            local settled = not (anim and anim.spinning)
+            local met     = settled and (pendingStats[stat] or 0) >= minVal
             love.graphics.setColor(met and ELT.STATUS_OK or ELT.STATUS_DEAD)
             love.graphics.print(Adventurer.statLabel(stat) .. " " .. minVal, reqX, y + 28)
             reqX = reqX + 100
@@ -297,13 +397,17 @@ local function drawCreateStats()
         love.graphics.print(class.desc, CLASS_X, y + 52)
     end
 
-    local selClass = Adventurer.CLASSES_ORDER[classListSel]
-    local canConfirm = eligibility[selClass]
-    drawFooter(
-        "[R] Reroll (" .. COST_REROLL .. " GP)  " ..
-        "UP/DOWN navigate classes  " ..
-        (canConfirm and "ENTER select class" or "ENTER (select an eligible class)")
-    )
+    local selClass   = Adventurer.CLASSES_ORDER[classListSel]
+    local canConfirm = eligibility[selClass] and classStatsSettled(selClass)
+    if isRolling then
+        drawFooter("Rolling...")
+    else
+        drawFooter(
+            "[R] Reroll (" .. COST_REROLL .. " GP)  " ..
+            "UP/DOWN navigate classes  " ..
+            (canConfirm and "ENTER select class" or "ENTER (select an eligible class)")
+        )
+    end
 end
 
 local function drawRoster()
@@ -401,22 +505,28 @@ function Tavern:enter()
     rosterSel    = 1
     partySel     = 1
     pendingName  = ""
+    pendingRace  = nil
     pendingStats = nil
     pendingClass = nil
+    raceListSel  = 1
     classListSel = 1
     blinkTimer   = 0
     showCursor   = true
     message      = nil
     messageTimer = 0
+    isRolling    = false
+    statAnimations = {}
 end
 
 function Tavern:update(dt)
+    -- Cursor blink.
     blinkTimer = blinkTimer + dt
     if blinkTimer >= 0.5 then
         showCursor = not showCursor
         blinkTimer = 0
     end
 
+    -- Message fade.
     if messageTimer > 0 then
         messageTimer = messageTimer - dt
         if messageTimer <= 0 then
@@ -424,11 +534,37 @@ function Tavern:update(dt)
             messageTimer = 0
         end
     end
+
+    -- Stat roll animation.
+    if isRolling then
+        local allDone = true
+        for _, key in ipairs(ANIM_ORDER) do
+            local anim = statAnimations[key]
+            if anim and anim.spinning then
+                allDone         = false
+                anim.elapsed    = anim.elapsed    + dt
+                anim.cycleTimer = anim.cycleTimer + dt
+                -- Slow the cycling down as the stop time approaches.
+                local timeLeft  = math.max(0, anim.stopAt - anim.elapsed)
+                local cycleRate = timeLeft > 0.4 and 0.04 or (timeLeft > 0.15 and 0.09 or 0.18)
+                if anim.cycleTimer >= cycleRate then
+                    anim.cycleTimer = 0
+                    anim.displayVal = love.math.random(3, 18)
+                end
+                if anim.elapsed >= anim.stopAt then
+                    anim.spinning   = false
+                    anim.displayVal = anim.finalVal
+                end
+            end
+        end
+        if allDone then isRolling = false end
+    end
 end
 
 function Tavern:draw()
     love.graphics.clear(ELT.BG_TOWN)
-    if sub == SUB.MENU         then drawMenu()
+    if sub == SUB.MENU             then drawMenu()
+    elseif sub == SUB.CREATE_RACE  then drawCreateRace()
     elseif sub == SUB.CREATE_NAME  then drawCreateName()
     elseif sub == SUB.CREATE_STATS then drawCreateStats()
     elseif sub == SUB.ROSTER       then drawRoster()
@@ -455,16 +591,9 @@ function Tavern:keypressed(key)
         elseif key == "return" then
             local choice = MENU_ITEMS[menuSel].key
             if choice == "c" then
-                if GS.gold >= COST_CREATE then
-                    GS.gold      = GS.gold - COST_CREATE
-                    pendingName  = ""
-                    pendingClass = nil
-                    classListSel = 1
-                    pendingStats = Adventurer.rollStats("human")
-                    sub          = SUB.CREATE_STATS
-                else
-                    postMessage("Not enough gold!  Creating an adventurer costs " .. COST_CREATE .. " GP.")
-                end
+                pendingRace  = nil
+                raceListSel  = 1
+                sub          = SUB.CREATE_RACE
             elseif choice == "r" then sub = SUB.ROSTER;  rosterSel = 1
             elseif choice == "p" then sub = SUB.PARTY;   partySel  = 1
             elseif choice == "l" then StateMachine:switch("town")
@@ -479,7 +608,7 @@ function Tavern:keypressed(key)
         if key == "backspace" then
             pendingName = pendingName:sub(1, -2)
         elseif key == "return" and #pendingName > 0 then
-            local adv = Adventurer.new(pendingName, "human", pendingClass, pendingStats)
+            local adv = Adventurer.new(pendingName, pendingRace, pendingClass, pendingStats)
             table.insert(GS.roster, adv)
             sub = SUB.ROSTER
             rosterSel = #GS.roster
@@ -487,11 +616,36 @@ function Tavern:keypressed(key)
             sub = SUB.CREATE_STATS   -- back to stats view; gold already spent
         end
 
+    elseif sub == SUB.CREATE_RACE then
+        if key == "up" then
+            raceListSel = raceListSel > 1 and raceListSel - 1 or #ALL_RACES
+        elseif key == "down" then
+            raceListSel = raceListSel < #ALL_RACES and raceListSel + 1 or 1
+        elseif key == "return" then
+            if GS.gold >= COST_CREATE then
+                GS.gold      = GS.gold - COST_CREATE
+                pendingRace  = ALL_RACES[raceListSel]
+                pendingName  = ""
+                pendingClass = nil
+                classListSel = 1
+                pendingStats = Adventurer.rollStats(pendingRace)
+                startRollAnimation(pendingStats)
+                sub          = SUB.CREATE_STATS
+            else
+                postMessage("Not enough gold!  Creating an adventurer costs " .. COST_CREATE .. " GP.")
+            end
+        elseif key == "escape" then
+            sub = SUB.MENU
+        end
+
     elseif sub == SUB.CREATE_STATS then
+        if isRolling then return end   -- ignore all input while animating
         if key == "r" then
             if GS.gold >= COST_REROLL then
                 GS.gold      = GS.gold - COST_REROLL
-                pendingStats = Adventurer.rollStats("human")
+                pendingStats = Adventurer.rollStats(pendingRace)
+                pendingClass = nil
+                startRollAnimation(pendingStats)
                 pendingClass = nil
             else
                 postMessage("Not enough gold to reroll!  (Need " .. COST_REROLL .. " GP)")

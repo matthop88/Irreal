@@ -18,9 +18,9 @@ local STAT_LABELS = {
     cha = "CHA",
 }
 
---- Roll a single stat: 3d6.
-local function roll3d6()
-    return love.math.random(1,6) + love.math.random(1,6) + love.math.random(1,6)
+--- Roll a single base stat: uniform random between 5 and 14.
+local function rollBaseStat()
+    return love.math.random(5, 14)
 end
 
 --- Roll a full set of stats for a given race, applying racial bonuses.
@@ -30,7 +30,7 @@ function Adventurer.rollStats(raceId)
     local bonus = race and race.stat_bonus or {}
     local stats = {}
     for _, key in ipairs(STAT_KEYS) do
-        stats[key] = roll3d6() + (bonus[key] or 0)
+        stats[key] = rollBaseStat() + (bonus[key] or 0)
     end
     local conBonus = math.floor((stats.con - 10) / 2)
     stats.hp = math.max(1, love.math.random(1, 3) + conBonus)
