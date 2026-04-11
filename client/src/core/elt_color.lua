@@ -46,6 +46,20 @@ local ELT_COLOR = {
 
     -- ── Thematic ─────────────────────────────────────────────────────────────
     OMINOUS         = BASE.RUST,             -- the chasm lore line
+
+    -- ── Stat values ───────────────────────────────────────────────────────────
+    STAT_HIGH       = BASE.GOLD,             -- stat ≥ 15 (exceptional)
+    STAT_NORMAL     = BASE.PARCHMENT,        -- stat 9–14 (average)
+    STAT_LOW        = BASE.RUST,             -- stat ≤ 8 (poor)
+
+    -- ── Character status ──────────────────────────────────────────────────────
+    STATUS_OK       = BASE.SAGE,             -- alive and well
+    STATUS_DEAD     = BASE.RUST,             -- dead, ash, or lost
+
+    -- ── Text input ────────────────────────────────────────────────────────────
+    INPUT_TEXT      = BASE.LINEN,            -- typed text
+    INPUT_CURSOR    = BASE.GOLD,             -- blinking cursor
+    INPUT_INACTIVE  = BASE.FLINT,            -- placeholder / inactive field
 }
 
 -- Proxy withAlpha so callers only need to require elt_color.

@@ -1,15 +1,16 @@
 local ELT = require("src.core.elt_color")
+local GS  = require("src.core.gamestate")
 
 local Town = {}
 
 -- Each entry represents a visitable location in the village hub.
 -- 'level' is nil for locations that aren't buildings (e.g. world map).
 local LOCATIONS = {
-    { key = "t", label = "Tavern",           level = 1, desc = "Hire and manage your adventurers." },
-    { key = "s", label = "Shop",             level = 1, desc = "Buy and sell weapons, armour, and supplies." },
-    { key = "c", label = "Church",           level = 1, desc = "Rest, heal, and pray for the fallen." },
-    { key = "g", label = "Training Grounds", level = 1, desc = "Hone the skills of your party." },
-    { key = "m", label = "World Map",        level = nil, desc = "Survey the valley and choose your destination." },
+    { key = "t", label = "Tavern",           level = 1, desc = "Hire and manage your adventurers.",        scene = "tavern" },
+    { key = "s", label = "Shop",             level = 1, desc = "Buy and sell weapons, armour, and supplies.", scene = nil },
+    { key = "c", label = "Church",           level = 1, desc = "Rest, heal, and pray for the fallen.",     scene = nil },
+    { key = "g", label = "Training Grounds", level = 1, desc = "Hone the skills of your party.",           scene = nil },
+    { key = "m", label = "World Map",        level = nil, desc = "Survey the valley and choose your destination.", scene = nil },
 }
 
 local ROW_HEIGHT  = 72
@@ -77,9 +78,9 @@ function Town:draw()
     -- Gold / resource display placeholder (top-right corner).
     love.graphics.setFont(Fonts.small)
     love.graphics.setColor(ELT.RESOURCE_GOLD)
-    love.graphics.print("Gold:  0", W - 200, 44)
+    love.graphics.print("Gold:  " .. GS.gold,  W - 200, 44)
     love.graphics.setColor(ELT.RESOURCE_STONE)
-    love.graphics.print("Stone: 0", W - 200, 62)
+    love.graphics.print("Stone: " .. GS.stone, W - 200, 62)
 
     self:drawLocationRows()
 
@@ -100,8 +101,10 @@ function Town:keypressed(key)
     elseif key == "escape" then
         StateMachine:switch("title")
     elseif key == "return" then
-        -- TODO Phase 2+: enter the selected location.
-        -- StateMachine:switch(LOCATIONS[self.selected].scene)
+        local loc = LOCATIONS[self.selected]
+        if loc.scene then
+            StateMachine:switch(loc.scene)
+        end
     else
         -- Direct key shortcuts jump to a location.
         for i, loc in ipairs(LOCATIONS) do

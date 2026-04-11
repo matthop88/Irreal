@@ -6,8 +6,9 @@ local StateMachine = {}
 
 -- Map of scene name → module path.  Add new scenes here as the project grows.
 local REGISTRY = {
-    title = "src.scenes.title",
-    town  = "src.scenes.town",
+    title  = "src.scenes.title",
+    town   = "src.scenes.town",
+    tavern = "src.scenes.tavern",
 }
 
 local _loaded  = {}   -- cache of required scene modules
@@ -55,6 +56,12 @@ end
 function StateMachine:keypressed(key)
     if _current and _current.keypressed then
         _current:keypressed(key)
+    end
+end
+
+function StateMachine:textinput(text)
+    if _current and _current.textinput then
+        _current:textinput(text)
     end
 end
 

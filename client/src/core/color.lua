@@ -37,6 +37,7 @@ local COLOR = {
 
     -- ── Accents ───────────────────────────────────────────────────────────────
     RUST          = {0.55, 0.30, 0.28},   -- dim rust-red
+    SAGE          = {0.38, 0.58, 0.36},   -- muted green
 }
 
 --- Returns a new color table with the given alpha applied.

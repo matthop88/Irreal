@@ -41,3 +41,7 @@ function love.keypressed(key, scancode, isrepeat)
     end
     StateMachine:keypressed(key)
 end
+
+function love.textinput(text)
+    StateMachine:textinput(text)
+end
