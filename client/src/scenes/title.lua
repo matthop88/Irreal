@@ -45,7 +45,7 @@ function Title:draw()
     -- Subtitle.
     love.graphics.setFont(Fonts.large)
     love.graphics.setColor(ELT.TEXT_SUBTITLE)
-    love.graphics.printf("The Mysterious Valley", 0, 200, W, "center")
+    love.graphics.printf("The Mystery of the Valley", 0, 200, W, "center")
 
     -- Thin decorative rule.
     love.graphics.setColor(ELT.withAlpha(ELT.RULE_FAINT, self.loreAlpha))

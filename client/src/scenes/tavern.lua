@@ -65,6 +65,9 @@ local pendingStats = nil
 local pendingClass = nil
 local raceListSel  = 1
 local classListSel = 1
+local statSel      = 1      -- index into STAT_KEYS; active when statPanelFocus == true
+local statPanelFocus = false  -- true = left (stats) panel has focus; false = right (classes)
+local augmentCost  = 10     -- GP cost for next augment; doubles after each use
 local blinkTimer   = 0
 local showCursor   = true
 local message      = nil
@@ -113,6 +116,13 @@ local function truncateText(font, text, maxW)
         end
     end
     return ellipsis
+end
+
+--- Maximum value a stat can reach through augmentation (highest it could roll).
+-- Base roll max is 12; racial bonus is always applied on top.
+local function statAugmentCap(statKey)
+    local bonus = pendingRace and (RACES[pendingRace].stat_bonus[statKey] or 0) or 0
+    return 12 + bonus
 end
 
 local function postMessage(text)
@@ -378,11 +388,26 @@ local function drawCreateStats()
         local displayVal = (anim and anim.spinning) and anim.displayVal or pendingStats[key]
         local spinning   = anim and anim.spinning
 
+        -- Selection highlight when the stat panel has focus.
+        if statPanelFocus and idx == statSel and not isRolling then
+            love.graphics.setColor(ELT.SELECT_BG)
+            love.graphics.rectangle("fill", x - 4, y - 4, STATS_COL_W - 10, 32, 4)
+            love.graphics.setColor(ELT.SELECT_BORDER)
+            love.graphics.rectangle("line", x - 4, y - 4, STATS_COL_W - 10, 32, 4)
+        end
+
         love.graphics.setFont(Fonts.medium)
         love.graphics.setColor(ELT.TEXT_SUBTITLE)
         love.graphics.print(Adventurer.statLabel(key), x, y)
         love.graphics.setColor(spinning and ELT.TEXT_FOOTER or statColor(key, pendingStats[key]))
         love.graphics.print(tostring(displayVal), x + 70, y)
+
+        -- MAX badge when the stat is at its augment ceiling.
+        if not spinning and pendingStats[key] >= statAugmentCap(key) then
+            love.graphics.setFont(Fonts.small)
+            love.graphics.setColor(ELT.TEXT_FOOTER)
+            love.graphics.print("MAX", x + 110, y + 4)
+        end
     end
 
     -- HP below the stat grid.
@@ -398,10 +423,10 @@ local function drawCreateStats()
     love.graphics.setColor((hpAnim and hpAnim.spinning) and ELT.TEXT_FOOTER or statColor("hp", pendingStats.hp))
     love.graphics.print(tostring(hpDisplay or "?"), MAIN_LEFT + 100, hpY + 4)
 
-    -- Reroll cost note.
+    -- Reroll / augment cost notes.
     love.graphics.setFont(Fonts.small)
     love.graphics.setColor(ELT.RESOURCE_GOLD)
-    love.graphics.print("Reroll: " .. COST_REROLL .. " GP  (have " .. GS.gold .. " GP)",
+    love.graphics.print("Reroll: " .. COST_REROLL .. " GP  |  Augment: " .. augmentCost .. " GP  (have " .. GS.gold .. " GP)",
         MAIN_LEFT + 30, hpY + 44)
 
     -- ── Vertical divider ─────────────────────────────────────────────────────
@@ -456,10 +481,17 @@ local function drawCreateStats()
     local canConfirm = eligibility[selClass] and classStatsSettled(selClass)
     if isRolling then
         drawFooter("Rolling...")
+    elseif statPanelFocus then
+        local sk  = Adventurer.statKeys()[statSel]
+        local cap = statAugmentCap(sk)
+        local augHint = (pendingStats[sk] >= cap)
+            and "[A] augment " .. Adventurer.statLabel(sk) .. " (MAX)"
+            or  "[A] augment " .. Adventurer.statLabel(sk) .. " (" .. augmentCost .. " GP)"
+        drawFooter("TAB: class panel  |  UP/DOWN select stat  |  " .. augHint)
     else
         drawFooter(
-            "[R] Reroll (" .. COST_REROLL .. " GP)  " ..
-            "UP/DOWN navigate classes  " ..
+            "[R] Reroll (" .. COST_REROLL .. " GP)  |  TAB: augment stats  |  " ..
+            "UP/DOWN navigate classes  |  " ..
             (canConfirm and "ENTER select class" or "ENTER (select an eligible class)")
         )
     end
@@ -622,22 +654,25 @@ end
 -- ── Scene interface ───────────────────────────────────────────────────────────
 
 function Tavern:enter()
-    sub          = SUB.MENU
-    menuSel      = 1
-    rosterSel    = 1
-    rosterScroll = 1
-    partySel     = 1
-    pendingName  = ""
-    pendingRace  = nil
-    pendingStats = nil
-    pendingClass = nil
-    raceListSel  = 1
-    classListSel = 1
-    blinkTimer   = 0
-    showCursor   = true
-    message      = nil
-    messageTimer = 0
-    isRolling    = false
+    sub            = SUB.MENU
+    menuSel        = 1
+    rosterSel      = 1
+    rosterScroll   = 1
+    partySel       = 1
+    pendingName    = ""
+    pendingRace    = nil
+    pendingStats   = nil
+    pendingClass   = nil
+    raceListSel    = 1
+    classListSel   = 1
+    statSel        = 1
+    augmentCost    = 10
+    statPanelFocus = false
+    blinkTimer     = 0
+    showCursor     = true
+    message        = nil
+    messageTimer   = 0
+    isRolling      = false
     statAnimations = {}
 end
 
@@ -754,6 +789,9 @@ function Tavern:keypressed(key)
                 classListSel = 1
                 pendingStats = Adventurer.rollStats(pendingRace)
                 startRollAnimation(pendingStats)
+                statSel        = 1
+                augmentCost    = 10
+                statPanelFocus = false
                 sub          = SUB.CREATE_STATS
             else
                 postMessage("Not enough gold!  Creating an adventurer costs " .. COST_CREATE .. " GP.")
@@ -770,26 +808,62 @@ function Tavern:keypressed(key)
                 pendingStats = Adventurer.rollStats(pendingRace)
                 pendingClass = nil
                 startRollAnimation(pendingStats)
-                pendingClass = nil
+                pendingClass   = nil
+                statSel        = 1
+                augmentCost    = 10
+                statPanelFocus = false
             else
                 postMessage("Not enough gold to reroll!  (Need " .. COST_REROLL .. " GP)")
             end
-        elseif key == "up" then
-            classListSel = classListSel > 1 and classListSel - 1 or #Adventurer.CLASSES_ORDER
-        elseif key == "down" then
-            classListSel = classListSel < #Adventurer.CLASSES_ORDER and classListSel + 1 or 1
-        elseif key == "return" then
-            local classId    = Adventurer.CLASSES_ORDER[classListSel]
-            local eligibility = Adventurer.classEligibility(pendingStats)
-            if eligibility[classId] then
-                pendingClass = classId
-                pendingName  = ""
-                sub          = SUB.CREATE_NAME
-            else
-                postMessage("This class requires higher stats.  Reroll or choose an eligible class.")
+        elseif key == "tab" then
+            statPanelFocus = not statPanelFocus
+        elseif statPanelFocus then
+            local numStats = #Adventurer.statKeys()
+            if key == "up" then
+                statSel = statSel > 1 and statSel - 1 or numStats
+            elseif key == "down" then
+                statSel = statSel < numStats and statSel + 1 or 1
+            elseif key == "a" then
+                local sk  = Adventurer.statKeys()[statSel]
+                local cap = statAugmentCap(sk)
+                if pendingStats[sk] >= cap then
+                    postMessage(Adventurer.statLabel(sk) .. " is already at its maximum (" .. cap .. ").")
+                elseif GS.gold < augmentCost then
+                    postMessage("Not enough gold!  Augmenting costs " .. augmentCost .. " GP.")
+                else
+                    GS.gold          = GS.gold - augmentCost
+                    local oldVal     = pendingStats[sk]
+                    pendingStats[sk] = oldVal + 1
+                    augmentCost      = augmentCost * 2
+                    -- When CON changes, adjust HP by the difference in its bonus.
+                    if sk == "con" then
+                        local oldBonus = math.floor((oldVal          - 7) / 3)
+                        local newBonus = math.floor((pendingStats.con - 7) / 3)
+                        pendingStats.hp = math.max(1, pendingStats.hp - oldBonus + newBonus)
+                    end
+                end
+            elseif key == "escape" then
+                sub = SUB.MENU
             end
-        elseif key == "escape" then
-            sub = SUB.MENU
+        else
+            -- Class panel has focus.
+            if key == "up" then
+                classListSel = classListSel > 1 and classListSel - 1 or #Adventurer.CLASSES_ORDER
+            elseif key == "down" then
+                classListSel = classListSel < #Adventurer.CLASSES_ORDER and classListSel + 1 or 1
+            elseif key == "return" then
+                local classId    = Adventurer.CLASSES_ORDER[classListSel]
+                local eligibility = Adventurer.classEligibility(pendingStats)
+                if eligibility[classId] and classStatsSettled(classId) then
+                    pendingClass = classId
+                    pendingName  = ""
+                    sub          = SUB.CREATE_NAME
+                else
+                    postMessage("This class requires higher stats.  Reroll or choose an eligible class.")
+                end
+            elseif key == "escape" then
+                sub = SUB.MENU
+            end
         end
 
     elseif sub == SUB.ROSTER then
