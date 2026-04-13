@@ -65,8 +65,8 @@ local pendingStats = nil
 local pendingClass = nil
 local raceListSel  = 1
 local classListSel = 1
-local statSel      = 1      -- index into STAT_KEYS; active when statPanelFocus == true
-local statPanelFocus = false  -- true = left (stats) panel has focus; false = right (classes)
+local statSel      = 1      -- index into STAT_KEYS; active when augmentMode == true
+local augmentMode  = false  -- true = augment-navigation mode is active
 local augmentCost  = 10     -- GP cost for next augment; doubles after each use
 local blinkTimer   = 0
 local showCursor   = true
@@ -388,8 +388,8 @@ local function drawCreateStats()
         local displayVal = (anim and anim.spinning) and anim.displayVal or pendingStats[key]
         local spinning   = anim and anim.spinning
 
-        -- Selection highlight when the stat panel has focus.
-        if statPanelFocus and idx == statSel and not isRolling then
+        -- Selection highlight when augment mode is active.
+        if augmentMode and idx == statSel and not isRolling then
             love.graphics.setColor(ELT.SELECT_BG)
             love.graphics.rectangle("fill", x - 4, y - 4, STATS_COL_W - 10, 32, 4)
             love.graphics.setColor(ELT.SELECT_BORDER)
@@ -481,16 +481,16 @@ local function drawCreateStats()
     local canConfirm = eligibility[selClass] and classStatsSettled(selClass)
     if isRolling then
         drawFooter("Rolling...")
-    elseif statPanelFocus then
+    elseif augmentMode then
         local sk  = Adventurer.statKeys()[statSel]
         local cap = statAugmentCap(sk)
         local augHint = (pendingStats[sk] >= cap)
-            and "[A] augment " .. Adventurer.statLabel(sk) .. " (MAX)"
-            or  "[A] augment " .. Adventurer.statLabel(sk) .. " (" .. augmentCost .. " GP)"
-        drawFooter("TAB: class panel  |  UP/DOWN select stat  |  " .. augHint)
+            and "ENTER augment " .. Adventurer.statLabel(sk) .. " (MAX)"
+            or  "ENTER augment " .. Adventurer.statLabel(sk) .. " (" .. augmentCost .. " GP)"
+        drawFooter("ARROWS navigate stats  |  " .. augHint .. "  |  ESC cancel")
     else
         drawFooter(
-            "[R] Reroll (" .. COST_REROLL .. " GP)  |  TAB: augment stats  |  " ..
+            "[R] Reroll (" .. COST_REROLL .. " GP)  |  [A] augment stats  |  " ..
             "UP/DOWN navigate classes  |  " ..
             (canConfirm and "ENTER select class" or "ENTER (select an eligible class)")
         )
@@ -666,8 +666,8 @@ function Tavern:enter()
     raceListSel    = 1
     classListSel   = 1
     statSel        = 1
+    augmentMode    = false
     augmentCost    = 10
-    statPanelFocus = false
     blinkTimer     = 0
     showCursor     = true
     message        = nil
@@ -791,7 +791,7 @@ function Tavern:keypressed(key)
                 startRollAnimation(pendingStats)
                 statSel        = 1
                 augmentCost    = 10
-                statPanelFocus = false
+                augmentMode    = false
                 sub          = SUB.CREATE_STATS
             else
                 postMessage("Not enough gold!  Creating an adventurer costs " .. COST_CREATE .. " GP.")
@@ -802,28 +802,24 @@ function Tavern:keypressed(key)
 
     elseif sub == SUB.CREATE_STATS then
         if isRolling then return end   -- ignore all input while animating
-        if key == "r" then
-            if GS.gold >= COST_REROLL then
-                GS.gold      = GS.gold - COST_REROLL
-                pendingStats = Adventurer.rollStats(pendingRace)
-                pendingClass = nil
-                startRollAnimation(pendingStats)
-                pendingClass   = nil
-                statSel        = 1
-                augmentCost    = 10
-                statPanelFocus = false
-            else
-                postMessage("Not enough gold to reroll!  (Need " .. COST_REROLL .. " GP)")
-            end
-        elseif key == "tab" then
-            statPanelFocus = not statPanelFocus
-        elseif statPanelFocus then
-            local numStats = #Adventurer.statKeys()
+
+        if augmentMode then
+            -- 2D grid navigation (LEFT/RIGHT = column, UP/DOWN = row).
+            local row = math.floor((statSel - 1) / 2)
+            local col = (statSel - 1) % 2
             if key == "up" then
-                statSel = statSel > 1 and statSel - 1 or numStats
+                row = (row - 1 + 3) % 3
+                statSel = row * 2 + col + 1
             elseif key == "down" then
-                statSel = statSel < numStats and statSel + 1 or 1
-            elseif key == "a" then
+                row = (row + 1) % 3
+                statSel = row * 2 + col + 1
+            elseif key == "left" then
+                col = (col - 1 + 2) % 2
+                statSel = row * 2 + col + 1
+            elseif key == "right" then
+                col = (col + 1) % 2
+                statSel = row * 2 + col + 1
+            elseif key == "return" then
                 local sk  = Adventurer.statKeys()[statSel]
                 local cap = statAugmentCap(sk)
                 if pendingStats[sk] >= cap then
@@ -835,24 +831,39 @@ function Tavern:keypressed(key)
                     local oldVal     = pendingStats[sk]
                     pendingStats[sk] = oldVal + 1
                     augmentCost      = augmentCost * 2
-                    -- When CON changes, adjust HP by the difference in its bonus.
                     if sk == "con" then
                         local oldBonus = math.floor((oldVal          - 7) / 3)
                         local newBonus = math.floor((pendingStats.con - 7) / 3)
                         pendingStats.hp = math.max(1, pendingStats.hp - oldBonus + newBonus)
                     end
+                    augmentMode = false   -- exit after each augment
                 end
             elseif key == "escape" then
-                sub = SUB.MENU
+                augmentMode = false
             end
+
         else
-            -- Class panel has focus.
-            if key == "up" then
+            -- Normal mode: class navigation.
+            if key == "r" then
+                if GS.gold >= COST_REROLL then
+                    GS.gold        = GS.gold - COST_REROLL
+                    pendingStats   = Adventurer.rollStats(pendingRace)
+                    pendingClass   = nil
+                    startRollAnimation(pendingStats)
+                    statSel        = 1
+                    augmentCost    = 10
+                    augmentMode    = false
+                else
+                    postMessage("Not enough gold to reroll!  (Need " .. COST_REROLL .. " GP)")
+                end
+            elseif key == "a" then
+                augmentMode = true
+            elseif key == "up" then
                 classListSel = classListSel > 1 and classListSel - 1 or #Adventurer.CLASSES_ORDER
             elseif key == "down" then
                 classListSel = classListSel < #Adventurer.CLASSES_ORDER and classListSel + 1 or 1
             elseif key == "return" then
-                local classId    = Adventurer.CLASSES_ORDER[classListSel]
+                local classId     = Adventurer.CLASSES_ORDER[classListSel]
                 local eligibility = Adventurer.classEligibility(pendingStats)
                 if eligibility[classId] and classStatsSettled(classId) then
                     pendingClass = classId
