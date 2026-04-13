@@ -26,12 +26,19 @@ local PARTY_LEFT   = 940
 local PARTY_WIDTH  = 300
 local CONTENT_TOP  = 130
 local ROW_H        = 62
+local ROSTER_VISIBLE = 8    -- max rows shown at once in the roster / party lists
+local SCROLLBAR_X  = MAIN_LEFT + MAIN_WIDTH + 8   -- sits in the gap before the party panel
+local SCROLLBAR_W  = 8
 local function maxNameLen()
     local iq = pendingStats and pendingStats.iq or 10
     return math.max(4, iq * 3 - 6)
 end
 local STATS_COL_W  = 230   -- width of each stat column in create screen
 local CLASS_X      = MAIN_LEFT + 490   -- x-start of the class eligibility panel
+local CLASS_RECT_X = CLASS_X - 6       -- left edge of the selection highlight rect
+local CLASS_RECT_W = PARTY_LEFT - CLASS_RECT_X - 10  -- fills up to the party panel
+local CLASS_ROW_H  = 120   -- vertical step between class rows (room for wrapped desc)
+local CLASS_RECT_H = 112   -- height of the selection rect (accommodates two desc lines)
 
 -- ── Costs ─────────────────────────────────────────────────────────────────────
 local COST_CREATE = 10
@@ -50,6 +57,7 @@ local MENU_ITEMS = {
 local sub          = SUB.MENU
 local menuSel      = 1
 local rosterSel    = 1
+local rosterScroll = 1   -- index of the first visible row in the roster list
 local partySel     = 1
 local pendingName  = ""
 local pendingRace  = nil
@@ -93,6 +101,20 @@ local function maxNameLen()
     return math.max(4, iq * 3 - 6)
 end
 
+-- Returns `text` truncated with "…" so it fits within `maxW` pixels using `font`.
+local function truncateText(font, text, maxW)
+    if font:getWidth(text) <= maxW then return text end
+    local ellipsis = "..."
+    local eW = font:getWidth(ellipsis)
+    for i = #text, 1, -1 do
+        local candidate = text:sub(1, i)
+        if font:getWidth(candidate) + eW <= maxW then
+            return candidate .. ellipsis
+        end
+    end
+    return ellipsis
+end
+
 local function postMessage(text)
     message      = text
     messageTimer = 2.5
@@ -108,11 +130,44 @@ local function classStatsSettled(classId)
     return true
 end
 
-local function statColor(value)
-    if value >= 15 then return ELT.STAT_HIGH
-    elseif value <= 8 then return ELT.STAT_LOW
-    else                   return ELT.STAT_NORMAL
+-- Thresholds below which a stat value is considered poor (shown in red).
+-- STR/IQ/CON have a lower bar (Fighter-class stats); AGI/WIS/CHA a higher one.
+local STAT_LOW_THRESHOLD = {
+    str = 8, iq = 8, con = 8,
+    agi = 9, wis = 9, cha = 9,
+    hp  = 2,
+}
+
+local function statColor(key, value)
+    if value >= 15 then return ELT.STAT_HIGH end
+    local threshold = STAT_LOW_THRESHOLD[key]
+    if threshold and value < threshold then return ELT.STAT_LOW end
+    return ELT.STAT_NORMAL
+end
+
+-- Draws a minimal track-and-thumb scrollbar.
+-- `total` = total number of items, `visible` = items shown, `first` = 1-based index of top item.
+local function drawScrollbar(total, visible, first)
+    if total <= visible then return end
+    local trackH = visible * ROW_H
+    love.graphics.setColor(ELT.SELECT_BG)
+    love.graphics.rectangle("fill", SCROLLBAR_X, CONTENT_TOP, SCROLLBAR_W, trackH, SCROLLBAR_W / 2)
+    local thumbH   = math.max(20, trackH * visible / total)
+    local maxFirst = total - visible
+    local thumbY   = CONTENT_TOP + (first - 1) / maxFirst * (trackH - thumbH)
+    love.graphics.setColor(ELT.TEXT_FOOTER)
+    love.graphics.rectangle("fill", SCROLLBAR_X, thumbY, SCROLLBAR_W, thumbH, SCROLLBAR_W / 2)
+end
+
+-- Adjusts rosterScroll so that rosterSel is always within the visible window.
+local function clampRosterScroll()
+    local total = #GS.roster
+    if rosterSel < rosterScroll then
+        rosterScroll = rosterSel
+    elseif rosterSel > rosterScroll + ROSTER_VISIBLE - 1 then
+        rosterScroll = rosterSel - ROSTER_VISIBLE + 1
     end
+    rosterScroll = math.max(1, math.min(rosterScroll, math.max(1, total - ROSTER_VISIBLE + 1)))
 end
 
 -- ── Draw helpers ──────────────────────────────────────────────────────────────
@@ -154,14 +209,14 @@ local function drawPartyPanel()
         love.graphics.printf("(empty)", PARTY_LEFT, 104, PARTY_WIDTH, "center")
     else
         for i, a in ipairs(GS.party) do
-            local y = 100 + (i - 1) * 52
+            local y = 100 + (i - 1) * 72
             love.graphics.setColor(ELT.TEXT_BODY)
             love.graphics.print(a.name, PARTY_LEFT + 8, y)
             love.graphics.setColor(ELT.TEXT_DESC)
-            love.graphics.print(a:raceClassLabel() .. "  Lv." .. a.level, PARTY_LEFT + 8, y + 18)
+            love.graphics.print(a:raceClassLabel() .. "  Lv." .. a.level, PARTY_LEFT + 8, y + 24)
             local sc = (a.status == "ok") and ELT.STATUS_OK or ELT.STATUS_DEAD
             love.graphics.setColor(sc)
-            love.graphics.print(a:statusLabel(), PARTY_LEFT + 8, y + 34)
+            love.graphics.print(a:statusLabel(), PARTY_LEFT + 8, y + 46)
         end
     end
 
@@ -326,7 +381,7 @@ local function drawCreateStats()
         love.graphics.setFont(Fonts.medium)
         love.graphics.setColor(ELT.TEXT_SUBTITLE)
         love.graphics.print(Adventurer.statLabel(key), x, y)
-        love.graphics.setColor(spinning and ELT.TEXT_FOOTER or statColor(pendingStats[key]))
+        love.graphics.setColor(spinning and ELT.TEXT_FOOTER or statColor(key, pendingStats[key]))
         love.graphics.print(tostring(displayVal), x + 70, y)
     end
 
@@ -340,7 +395,7 @@ local function drawCreateStats()
     love.graphics.setFont(Fonts.medium)
     love.graphics.setColor(ELT.TEXT_SUBTITLE)
     love.graphics.print("HP", MAIN_LEFT + 30, hpY + 4)
-    love.graphics.setColor((hpAnim and hpAnim.spinning) and ELT.TEXT_FOOTER or statColor(pendingStats.hp))
+    love.graphics.setColor((hpAnim and hpAnim.spinning) and ELT.TEXT_FOOTER or statColor("hp", pendingStats.hp))
     love.graphics.print(tostring(hpDisplay or "?"), MAIN_LEFT + 100, hpY + 4)
 
     -- Reroll cost note.
@@ -362,17 +417,17 @@ local function drawCreateStats()
         local class    = CLASSES[classId]
         local eligible = eligibility[classId] and classStatsSettled(classId)
         local sel      = (i == classListSel)
-        local y        = startY + 48 + (i - 1) * 96
+        local y        = startY + 48 + (i - 1) * CLASS_ROW_H
 
         -- Selection highlight (only shown when eligible).
         if sel and eligible then
             love.graphics.setColor(ELT.SELECT_BG)
-            love.graphics.rectangle("fill", CLASS_X - 6, y - 4, 340, 88, 4)
+            love.graphics.rectangle("fill", CLASS_RECT_X, y - 4, CLASS_RECT_W, CLASS_RECT_H, 4)
             love.graphics.setColor(ELT.SELECT_BORDER)
-            love.graphics.rectangle("line", CLASS_X - 6, y - 4, 340, 88, 4)
+            love.graphics.rectangle("line", CLASS_RECT_X, y - 4, CLASS_RECT_W, CLASS_RECT_H, 4)
         elseif sel then
             love.graphics.setColor(ELT.SELECT_BG)
-            love.graphics.rectangle("fill", CLASS_X - 6, y - 4, 340, 88, 4)
+            love.graphics.rectangle("fill", CLASS_RECT_X, y - 4, CLASS_RECT_W, CLASS_RECT_H, 4)
         end
 
         -- Class name: gold if eligible, gray if not.
@@ -394,7 +449,7 @@ local function drawCreateStats()
 
         -- Description.
         love.graphics.setColor(eligible and ELT.TEXT_DESC or ELT.TEXT_FOOTER)
-        love.graphics.print(class.desc, CLASS_X, y + 52)
+        love.graphics.printf(class.desc, CLASS_X, y + 52, CLASS_RECT_W - (CLASS_X - CLASS_RECT_X))
     end
 
     local selClass   = Adventurer.CLASSES_ORDER[classListSel]
@@ -421,8 +476,10 @@ local function drawRoster()
         love.graphics.printf("Visit 'Create Adventurer' to hire your first warrior.",
             MAIN_LEFT, CONTENT_TOP + 40, MAIN_WIDTH, "center")
     else
-        for i, a in ipairs(GS.roster) do
-            local y   = CONTENT_TOP + (i - 1) * ROW_H
+        local lastVisible = math.min(rosterScroll + ROSTER_VISIBLE - 1, #GS.roster)
+        for i = rosterScroll, lastVisible do
+            local a   = GS.roster[i]
+            local y   = CONTENT_TOP + (i - rosterScroll) * ROW_H
             local sel = (i == rosterSel)
 
             if sel then
@@ -446,6 +503,8 @@ local function drawRoster()
             love.graphics.setColor(sc)
             love.graphics.print(a:statusLabel(), MAIN_LEFT + MAIN_WIDTH - 80, y + 14)
         end
+
+        drawScrollbar(#GS.roster, ROSTER_VISIBLE, rosterScroll)
     end
 
     drawPartyPanel()
@@ -454,6 +513,68 @@ local function drawRoster()
         and "UP / DOWN  navigate     ENTER  hire  (" .. COST_HIRE .. " GP)     ESC  back"
         or  "UP / DOWN  navigate     (Party is full)     ESC  back"
     drawFooter(hint)
+end
+
+local function drawPartyStatsPanel(a)
+    love.graphics.setFont(Fonts.medium)
+    love.graphics.setColor(ELT.HEADING)
+    local displayName = a and truncateText(Fonts.medium, a.name, PARTY_WIDTH - 16) or "—"
+    love.graphics.printf(displayName, PARTY_LEFT, 36, PARTY_WIDTH, "center")
+
+    love.graphics.setColor(ELT.RULE)
+    love.graphics.rectangle("fill", PARTY_LEFT, 72, PARTY_WIDTH, 1)
+
+    if not a then
+        love.graphics.setFont(Fonts.small)
+        love.graphics.setColor(ELT.TEXT_FOOTER)
+        love.graphics.printf("(empty)", PARTY_LEFT, CONTENT_TOP + 20, PARTY_WIDTH, "center")
+        return
+    end
+
+    -- Race · Class · Level
+    love.graphics.setFont(Fonts.small)
+    love.graphics.setColor(ELT.TEXT_SUBTITLE)
+    love.graphics.printf(a:raceClassLabel() .. "  ·  Lv." .. a.level,
+        PARTY_LEFT, 80, PARTY_WIDTH, "center")
+
+    -- Status
+    local sc = (a.status == "ok") and ELT.STATUS_OK or ELT.STATUS_DEAD
+    love.graphics.setColor(sc)
+    love.graphics.printf(a:statusLabel(), PARTY_LEFT, 102, PARTY_WIDTH, "center")
+
+    love.graphics.setColor(ELT.RULE)
+    love.graphics.rectangle("fill", PARTY_LEFT, 126, PARTY_WIDTH, 1)
+
+    -- Stats: 2-column grid (STR/IQ | WIS/CON | AGI/CHA)
+    local colW   = PARTY_WIDTH / 2
+    local startY = 138
+    for idx, key in ipairs(Adventurer.statKeys()) do
+        local col = (idx - 1) % 2
+        local row = math.floor((idx - 1) / 2)
+        local x   = PARTY_LEFT + col * colW + 10
+        local y   = startY + row * 32
+        love.graphics.setFont(Fonts.small)
+        love.graphics.setColor(ELT.TEXT_SUBTITLE)
+        love.graphics.print(Adventurer.statLabel(key), x, y)
+        love.graphics.setColor(statColor(key, a.stats[key]))
+        love.graphics.print(tostring(a.stats[key]), x + 52, y)
+    end
+
+    -- HP below the stat grid
+    local hpY = startY + 3 * 32 + 6
+    love.graphics.setColor(ELT.RULE)
+    love.graphics.rectangle("fill", PARTY_LEFT, hpY - 4, PARTY_WIDTH, 1)
+    love.graphics.setFont(Fonts.small)
+    love.graphics.setColor(ELT.TEXT_SUBTITLE)
+    love.graphics.print("HP", PARTY_LEFT + 10, hpY + 4)
+    love.graphics.setColor(statColor("hp", a.hp.current))
+    love.graphics.print(a.hp.current .. " / " .. a.hp.max, PARTY_LEFT + 62, hpY + 4)
+
+    -- Member count at bottom
+    love.graphics.setFont(Fonts.small)
+    love.graphics.setColor(ELT.TEXT_FOOTER)
+    love.graphics.printf(#GS.party .. " / " .. GS:partyCapacity() .. " members",
+        PARTY_LEFT, love.graphics.getHeight() - 50, PARTY_WIDTH, "center")
 end
 
 local function drawPartyView()
@@ -494,6 +615,7 @@ local function drawPartyView()
         end
     end
 
+    drawPartyStatsPanel(GS.party[partySel])
     drawFooter("UP / DOWN  navigate     ENTER  dismiss to roster     ESC  back")
 end
 
@@ -503,6 +625,7 @@ function Tavern:enter()
     sub          = SUB.MENU
     menuSel      = 1
     rosterSel    = 1
+    rosterScroll = 1
     partySel     = 1
     pendingName  = ""
     pendingRace  = nil
@@ -594,7 +717,7 @@ function Tavern:keypressed(key)
                 pendingRace  = nil
                 raceListSel  = 1
                 sub          = SUB.CREATE_RACE
-            elseif choice == "r" then sub = SUB.ROSTER;  rosterSel = 1
+            elseif choice == "r" then sub = SUB.ROSTER;  rosterSel = 1; rosterScroll = 1
             elseif choice == "p" then sub = SUB.PARTY;   partySel  = 1
             elseif choice == "l" then StateMachine:switch("town")
             end
@@ -612,6 +735,7 @@ function Tavern:keypressed(key)
             table.insert(GS.roster, adv)
             sub = SUB.ROSTER
             rosterSel = #GS.roster
+            clampRosterScroll()
         elseif key == "escape" then
             sub = SUB.CREATE_STATS   -- back to stats view; gold already spent
         end
@@ -671,13 +795,16 @@ function Tavern:keypressed(key)
     elseif sub == SUB.ROSTER then
         if key == "up" then
             rosterSel = rosterSel > 1 and rosterSel - 1 or math.max(1, #GS.roster)
+            clampRosterScroll()
         elseif key == "down" then
             rosterSel = rosterSel < #GS.roster and rosterSel + 1 or 1
+            clampRosterScroll()
         elseif key == "return" and #GS.roster > 0 then
             if GS.gold >= COST_HIRE then
                 GS.gold = GS.gold - COST_HIRE
                 GS:addToParty(GS.roster[rosterSel])
                 rosterSel = math.min(rosterSel, math.max(1, #GS.roster))
+                clampRosterScroll()
             else
                 postMessage("Not enough gold to hire!  (Need " .. COST_HIRE .. " GP)")
             end

@@ -10,7 +10,7 @@ return {
         desc        = "A sturdy warrior trained in all weapons and armour.",
         hp_die      = 3,
         prime_stats = { "str", "con" },
-        requires    = { str = 10, con = 10 },
+        requires    = { str = 8, con = 8 },
     },
     ranger = {
         id          = "ranger",
@@ -18,7 +18,7 @@ return {
         desc        = "A skilled hunter adept in combat and wilderness survival.",
         hp_die      = 3,
         prime_stats = { "iq", "agi" },
-        requires    = { iq = 10, agi = 11 },
+        requires    = { iq = 8, agi = 9 },
     },
     priest = {
         id          = "priest",
@@ -26,6 +26,6 @@ return {
         desc        = "A devoted healer who channels divine power.",
         hp_die      = 3,
         prime_stats = { "wis", "cha" },
-        requires    = { wis = 12, cha = 11 },
+        requires    = { wis = 9, cha = 9 },
     },
 }
