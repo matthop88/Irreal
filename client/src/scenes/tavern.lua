@@ -6,16 +6,6 @@ local RACES      = require("src.data.races")
 
 local Tavern = {}
 
--- ── Sub-state identifiers ─────────────────────────────────────────────────────
-local SUB = {
-    MENU         = "menu",
-    CREATE_RACE  = "create_race",
-    CREATE_STATS = "create_stats",
-    CREATE_NAME  = "create_name",
-    ROSTER       = "roster",
-    PARTY        = "party",
-}
-
 -- ── Ordered lists for display ─────────────────────────────────────────────────
 local ALL_RACES = { "human", "elf", "dwarf", "hobbit" }
 
@@ -54,7 +44,7 @@ local MENU_ITEMS = {
 }
 
 -- ── Internal state ────────────────────────────────────────────────────────────
-local sub          = SUB.MENU
+local sub
 local menuSel      = 1
 local rosterSel    = 1
 local rosterScroll = 1   -- index of the first visible row in the roster list
@@ -98,11 +88,6 @@ local function startRollAnimation(stats)
 end
 
 -- ── Helpers ───────────────────────────────────────────────────────────────────
-
-local function maxNameLen()
-    local iq = pendingStats and pendingStats.iq or 10
-    return math.max(4, iq * 3 - 6)
-end
 
 -- Returns `text` truncated with "…" so it fits within `maxW` pixels using `font`.
 local function truncateText(font, text, maxW)
@@ -651,95 +636,16 @@ local function drawPartyView()
     drawFooter("UP / DOWN  navigate     ENTER  dismiss to roster     ESC  back")
 end
 
--- ── Scene interface ───────────────────────────────────────────────────────────
+-- ── Sub-state handlers (K/V: name → { draw, update, keypressed, textinput? }) ─
 
-function Tavern:enter()
-    sub            = SUB.MENU
-    menuSel        = 1
-    rosterSel      = 1
-    rosterScroll   = 1
-    partySel       = 1
-    pendingName    = ""
-    pendingRace    = nil
-    pendingStats   = nil
-    pendingClass   = nil
-    raceListSel    = 1
-    classListSel   = 1
-    statSel        = 1
-    augmentMode    = false
-    augmentCost    = 10
-    blinkTimer     = 0
-    showCursor     = true
-    message        = nil
-    messageTimer   = 0
-    isRolling      = false
-    statAnimations = {}
-end
+local function noop() end
 
-function Tavern:update(dt)
-    -- Cursor blink.
-    blinkTimer = blinkTimer + dt
-    if blinkTimer >= 0.5 then
-        showCursor = not showCursor
-        blinkTimer = 0
-    end
+local SUB = {}
 
-    -- Message fade.
-    if messageTimer > 0 then
-        messageTimer = messageTimer - dt
-        if messageTimer <= 0 then
-            message      = nil
-            messageTimer = 0
-        end
-    end
-
-    -- Stat roll animation.
-    if isRolling then
-        local allDone = true
-        for _, key in ipairs(ANIM_ORDER) do
-            local anim = statAnimations[key]
-            if anim and anim.spinning then
-                allDone         = false
-                anim.elapsed    = anim.elapsed    + dt
-                anim.cycleTimer = anim.cycleTimer + dt
-                -- Slow the cycling down as the stop time approaches.
-                local timeLeft  = math.max(0, anim.stopAt - anim.elapsed)
-                local cycleRate = timeLeft > 0.4 and 0.04 or (timeLeft > 0.15 and 0.09 or 0.18)
-                if anim.cycleTimer >= cycleRate then
-                    anim.cycleTimer = 0
-                    anim.displayVal = love.math.random(3, 18)
-                end
-                if anim.elapsed >= anim.stopAt then
-                    anim.spinning   = false
-                    anim.displayVal = anim.finalVal
-                end
-            end
-        end
-        if allDone then isRolling = false end
-    end
-end
-
-function Tavern:draw()
-    love.graphics.clear(ELT.BG_TOWN)
-    if sub == SUB.MENU             then drawMenu()
-    elseif sub == SUB.CREATE_RACE  then drawCreateRace()
-    elseif sub == SUB.CREATE_NAME  then drawCreateName()
-    elseif sub == SUB.CREATE_STATS then drawCreateStats()
-    elseif sub == SUB.ROSTER       then drawRoster()
-    elseif sub == SUB.PARTY        then drawPartyView()
-    end
-end
-
-function Tavern:textinput(text)
-    if sub == SUB.CREATE_NAME then
-        if #pendingName < maxNameLen() then
-            pendingName = pendingName .. text
-        end
-    end
-end
-
-function Tavern:keypressed(key)
-    if sub == SUB.MENU then
+SUB.MENU = {
+    draw       = drawMenu,
+    update     = noop,
+    keypressed = function(_, key)
         if key == "up" then
             menuSel = menuSel > 1 and menuSel - 1 or #MENU_ITEMS
         elseif key == "down" then
@@ -752,8 +658,8 @@ function Tavern:keypressed(key)
                 pendingRace  = nil
                 raceListSel  = 1
                 sub          = SUB.CREATE_RACE
-            elseif choice == "r" then sub = SUB.ROSTER;  rosterSel = 1; rosterScroll = 1
-            elseif choice == "p" then sub = SUB.PARTY;   partySel  = 1
+            elseif choice == "r" then sub = SUB.ROSTER; rosterSel = 1; rosterScroll = 1
+            elseif choice == "p" then sub = SUB.PARTY; partySel = 1
             elseif choice == "l" then StateMachine:switch("town")
             end
         else
@@ -761,21 +667,13 @@ function Tavern:keypressed(key)
                 if key == item.key then menuSel = i; break end
             end
         end
+    end,
+}
 
-    elseif sub == SUB.CREATE_NAME then
-        if key == "backspace" then
-            pendingName = pendingName:sub(1, -2)
-        elseif key == "return" and #pendingName > 0 then
-            local adv = Adventurer.new(pendingName, pendingRace, pendingClass, pendingStats)
-            table.insert(GS.roster, adv)
-            sub = SUB.ROSTER
-            rosterSel = #GS.roster
-            clampRosterScroll()
-        elseif key == "escape" then
-            sub = SUB.CREATE_STATS   -- back to stats view; gold already spent
-        end
-
-    elseif sub == SUB.CREATE_RACE then
+SUB.CREATE_RACE = {
+    draw       = drawCreateRace,
+    update     = noop,
+    keypressed = function(_, key)
         if key == "up" then
             raceListSel = raceListSel > 1 and raceListSel - 1 or #ALL_RACES
         elseif key == "down" then
@@ -792,19 +690,45 @@ function Tavern:keypressed(key)
                 statSel        = 1
                 augmentCost    = 10
                 augmentMode    = false
-                sub          = SUB.CREATE_STATS
+                sub            = SUB.CREATE_STATS
             else
                 postMessage("Not enough gold!  Creating an adventurer costs " .. COST_CREATE .. " GP.")
             end
         elseif key == "escape" then
             sub = SUB.MENU
         end
+    end,
+}
 
-    elseif sub == SUB.CREATE_STATS then
-        if isRolling then return end   -- ignore all input while animating
+SUB.CREATE_STATS = {
+    draw = drawCreateStats,
+    update = function(_, dt)
+        if not isRolling then return end
+        local allDone = true
+        for _, animKey in ipairs(ANIM_ORDER) do
+            local anim = statAnimations[animKey]
+            if anim and anim.spinning then
+                allDone         = false
+                anim.elapsed    = anim.elapsed + dt
+                anim.cycleTimer = anim.cycleTimer + dt
+                local timeLeft  = math.max(0, anim.stopAt - anim.elapsed)
+                local cycleRate = timeLeft > 0.4 and 0.04 or (timeLeft > 0.15 and 0.09 or 0.18)
+                if anim.cycleTimer >= cycleRate then
+                    anim.cycleTimer = 0
+                    anim.displayVal = love.math.random(3, 18)
+                end
+                if anim.elapsed >= anim.stopAt then
+                    anim.spinning   = false
+                    anim.displayVal = anim.finalVal
+                end
+            end
+        end
+        if allDone then isRolling = false end
+    end,
+    keypressed = function(_, key)
+        if isRolling then return end
 
         if augmentMode then
-            -- 2D grid navigation (LEFT/RIGHT = column, UP/DOWN = row).
             local row = math.floor((statSel - 1) / 2)
             local col = (statSel - 1) % 2
             if key == "up" then
@@ -832,18 +756,16 @@ function Tavern:keypressed(key)
                     pendingStats[sk] = oldVal + 1
                     augmentCost      = augmentCost * 2
                     if sk == "con" then
-                        local oldBonus = math.floor((oldVal          - 7) / 3)
+                        local oldBonus = math.floor((oldVal - 7) / 3)
                         local newBonus = math.floor((pendingStats.con - 7) / 3)
                         pendingStats.hp = math.max(1, pendingStats.hp - oldBonus + newBonus)
                     end
-                    augmentMode = false   -- exit after each augment
+                    augmentMode = false
                 end
             elseif key == "escape" then
                 augmentMode = false
             end
-
         else
-            -- Normal mode: class navigation.
             if key == "r" then
                 if GS.gold >= COST_REROLL then
                     GS.gold        = GS.gold - COST_REROLL
@@ -876,8 +798,42 @@ function Tavern:keypressed(key)
                 sub = SUB.MENU
             end
         end
+    end,
+}
 
-    elseif sub == SUB.ROSTER then
+SUB.CREATE_NAME = {
+    draw = drawCreateName,
+    update = function(_, dt)
+        blinkTimer = blinkTimer + dt
+        if blinkTimer >= 0.5 then
+            showCursor = not showCursor
+            blinkTimer = 0
+        end
+    end,
+    keypressed = function(_, key)
+        if key == "backspace" then
+            pendingName = pendingName:sub(1, -2)
+        elseif key == "return" and #pendingName > 0 then
+            local adv = Adventurer.new(pendingName, pendingRace, pendingClass, pendingStats)
+            table.insert(GS.roster, adv)
+            sub = SUB.ROSTER
+            rosterSel = #GS.roster
+            clampRosterScroll()
+        elseif key == "escape" then
+            sub = SUB.CREATE_STATS
+        end
+    end,
+    textinput = function(_, text)
+        if #pendingName < maxNameLen() then
+            pendingName = pendingName .. text
+        end
+    end,
+}
+
+SUB.ROSTER = {
+    draw       = drawRoster,
+    update     = noop,
+    keypressed = function(_, key)
         if key == "up" then
             rosterSel = rosterSel > 1 and rosterSel - 1 or math.max(1, #GS.roster)
             clampRosterScroll()
@@ -896,8 +852,13 @@ function Tavern:keypressed(key)
         elseif key == "escape" then
             sub = SUB.MENU
         end
+    end,
+}
 
-    elseif sub == SUB.PARTY then
+SUB.PARTY = {
+    draw       = drawPartyView,
+    update     = noop,
+    keypressed = function(_, key)
         if key == "up" then
             partySel = partySel > 1 and partySel - 1 or math.max(1, #GS.party)
         elseif key == "down" then
@@ -908,7 +869,60 @@ function Tavern:keypressed(key)
         elseif key == "escape" then
             sub = SUB.MENU
         end
+    end,
+}
+
+sub = SUB.MENU
+
+-- ── Scene interface ───────────────────────────────────────────────────────────
+
+function Tavern:enter()
+    sub            = SUB.MENU
+    menuSel        = 1
+    rosterSel      = 1
+    rosterScroll   = 1
+    partySel       = 1
+    pendingName    = ""
+    pendingRace    = nil
+    pendingStats   = nil
+    pendingClass   = nil
+    raceListSel    = 1
+    classListSel   = 1
+    statSel        = 1
+    augmentMode    = false
+    augmentCost    = 10
+    blinkTimer     = 0
+    showCursor     = true
+    message        = nil
+    messageTimer   = 0
+    isRolling      = false
+    statAnimations = {}
+end
+
+function Tavern:update(dt)
+    if messageTimer > 0 then
+        messageTimer = messageTimer - dt
+        if messageTimer <= 0 then
+            message      = nil
+            messageTimer = 0
+        end
     end
+    sub:update(dt)
+end
+
+function Tavern:draw()
+    love.graphics.clear(ELT.BG_TOWN)
+    sub:draw()
+end
+
+function Tavern:textinput(text)
+    if sub.textinput then
+        sub:textinput(text)
+    end
+end
+
+function Tavern:keypressed(key)
+    sub:keypressed(key)
 end
 
 function Tavern:leave()
