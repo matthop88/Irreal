@@ -6,9 +6,6 @@ local RACES      = require("src.data.races")
 
 local Tavern = {}
 
--- ── Ordered lists for display ─────────────────────────────────────────────────
-local ALL_RACES = { "human", "elf", "dwarf", "hobbit" }
-
 -- ── Layout constants ──────────────────────────────────────────────────────────
 local MAIN_LEFT    = 80
 local MAIN_WIDTH   = 820
@@ -19,10 +16,6 @@ local ROW_H        = 62
 local ROSTER_VISIBLE = 8    -- max rows shown at once in the roster / party lists
 local SCROLLBAR_X  = MAIN_LEFT + MAIN_WIDTH + 8   -- sits in the gap before the party panel
 local SCROLLBAR_W  = 8
-local function maxNameLen()
-    local iq = pendingStats and pendingStats.iq or 10
-    return math.max(4, iq * 3 - 6)
-end
 local STATS_COL_W  = 230   -- width of each stat column in create screen
 local CLASS_X      = MAIN_LEFT + 490   -- x-start of the class eligibility panel
 local CLASS_RECT_X = CLASS_X - 6       -- left edge of the selection highlight rect
@@ -53,6 +46,12 @@ local pendingClass = nil
 -- Transient status line (any sub-state may call postMessage).
 local message      = nil
 local messageTimer = 0
+
+--- Max adventurer name length from IQ (must sit after `local pendingStats` so we close over it).
+local function maxNameLen()
+    local iq = (type(pendingStats) == "table" and pendingStats.iq) or 10
+    return math.max(4, iq * 3 - 6)
+end
 
 -- ── Stat roll animation ───────────────────────────────────────────────────────
 -- Stats are displayed in this order in the 2-column grid (row by row).
@@ -293,54 +292,6 @@ local function drawCreateName(self)
     love.graphics.print("Max " .. maxNameLen() .. " characters.", boxX, boxY + boxH + 12)
 
     drawFooter("ENTER  confirm     ESC  back to stats")
-end
-
-local function drawCreateRace(self)
-    drawHeader("Choose Your Race",
-        "Browse freely.  Costs " .. COST_CREATE .. " GP to roll stats once you choose.")
-
-    local STAT_ORDER = { "str", "iq", "wis", "con", "agi", "cha" }
-    local raceRowH   = 112
-
-    for i, raceId in ipairs(ALL_RACES) do
-        local race = RACES[raceId]
-        local sel  = (i == self.raceListSel)
-        local y    = CONTENT_TOP + (i - 1) * raceRowH
-
-        if sel then
-            love.graphics.setColor(ELT.SELECT_BG)
-            love.graphics.rectangle("fill", MAIN_LEFT, y - 4, MAIN_WIDTH, raceRowH - 8, 5)
-            love.graphics.setColor(ELT.SELECT_BORDER)
-            love.graphics.rectangle("line", MAIN_LEFT, y - 4, MAIN_WIDTH, raceRowH - 8, 5)
-        end
-
-        -- Race name.
-        love.graphics.setFont(Fonts.medium)
-        love.graphics.setColor(sel and ELT.HEADING_BRIGHT or ELT.HEADING)
-        love.graphics.print(race.label, MAIN_LEFT + 16, y + 6)
-
-        -- Description.
-        love.graphics.setFont(Fonts.small)
-        love.graphics.setColor(ELT.TEXT_DESC)
-        love.graphics.print(race.desc, MAIN_LEFT + 16, y + 34)
-
-        -- Stat modifiers.
-        local modX = MAIN_LEFT + 16
-        for _, key in ipairs(STAT_ORDER) do
-            local val = race.stat_bonus[key]
-            if val and val ~= 0 then
-                local sign = val > 0 and "+" or ""
-                love.graphics.setColor(val > 0 and ELT.STATUS_OK or ELT.STATUS_DEAD)
-                love.graphics.print(
-                    Adventurer.statLabel(key) .. " " .. sign .. val,
-                    modX, y + 58)
-                modX = modX + 110
-            end
-        end
-    end
-
-    drawPartyPanel()
-    drawFooter("UP / DOWN  navigate     ENTER  select race (" .. COST_CREATE .. " GP)     ESC  cancel")
 end
 
 local function drawCreateStats(self)
@@ -634,6 +585,9 @@ local SUB = {}
 
 SUB.MENU = {
     menuSel = 1,
+    init = function(self)
+        self.menuSel = 1
+    end,
     draw       = drawMenu,
     update     = noop,
     keypressed = function(self, key)
@@ -646,16 +600,15 @@ SUB.MENU = {
         elseif key == "return" then
             local choice = MENU_ITEMS[self.menuSel].key
             if choice == "c" then
-                pendingRace           = nil
-                SUB.CREATE_RACE.raceListSel = 1
-                sub                   = SUB.CREATE_RACE
+                pendingRace = nil
+                SUB.CREATE_RACE:init()
+                sub         = SUB.CREATE_RACE
             elseif choice == "r" then
+                SUB.ROSTER:init()
                 sub = SUB.ROSTER
-                SUB.ROSTER.rosterSel    = 1
-                SUB.ROSTER.rosterScroll = 1
             elseif choice == "p" then
+                SUB.PARTY:init()
                 sub = SUB.PARTY
-                SUB.PARTY.partySel = 1
             elseif choice == "l" then
                 StateMachine:switch("town")
             end
@@ -668,27 +621,71 @@ SUB.MENU = {
 }
 
 SUB.CREATE_RACE = {
+    ALL_RACES   = { "human", "elf", "dwarf", "hobbit" },
     raceListSel = 1,
-    draw       = drawCreateRace,
+    STAT_ORDER  = { "str", "iq", "wis", "con", "agi", "cha" },
+    init = function(self)
+        self.raceListSel = 1
+    end,
+    draw = function(self)
+        drawHeader("Choose Your Race",
+            "Browse freely.  Costs " .. COST_CREATE .. " GP to roll stats once you choose.")
+
+        local raceRowH = 112
+
+        for i, raceId in ipairs(self.ALL_RACES) do
+            local race = RACES[raceId]
+            local sel  = (i == self.raceListSel)
+            local y    = CONTENT_TOP + (i - 1) * raceRowH
+
+            if sel then
+                love.graphics.setColor(ELT.SELECT_BG)
+                love.graphics.rectangle("fill", MAIN_LEFT, y - 4, MAIN_WIDTH, raceRowH - 8, 5)
+                love.graphics.setColor(ELT.SELECT_BORDER)
+                love.graphics.rectangle("line", MAIN_LEFT, y - 4, MAIN_WIDTH, raceRowH - 8, 5)
+            end
+
+            love.graphics.setFont(Fonts.medium)
+            love.graphics.setColor(sel and ELT.HEADING_BRIGHT or ELT.HEADING)
+            love.graphics.print(race.label, MAIN_LEFT + 16, y + 6)
+
+            love.graphics.setFont(Fonts.small)
+            love.graphics.setColor(ELT.TEXT_DESC)
+            love.graphics.print(race.desc, MAIN_LEFT + 16, y + 34)
+
+            local modX = MAIN_LEFT + 16
+            for _, key in ipairs(self.STAT_ORDER) do
+                local val = race.stat_bonus[key]
+                if val and val ~= 0 then
+                    local sign = val > 0 and "+" or ""
+                    love.graphics.setColor(val > 0 and ELT.STATUS_OK or ELT.STATUS_DEAD)
+                    love.graphics.print(
+                        Adventurer.statLabel(key) .. " " .. sign .. val,
+                        modX, y + 58)
+                    modX = modX + 110
+                end
+            end
+        end
+
+        drawPartyPanel()
+        drawFooter("UP / DOWN  navigate     ENTER  select race (" .. COST_CREATE .. " GP)     ESC  cancel")
+    end,
     update     = noop,
     keypressed = function(self, key)
         if key == "up" then
-            self.raceListSel = self.raceListSel > 1 and self.raceListSel - 1 or #ALL_RACES
+            self.raceListSel = self.raceListSel > 1 and self.raceListSel - 1 or #self.ALL_RACES
         elseif key == "down" then
-            self.raceListSel = self.raceListSel < #ALL_RACES and self.raceListSel + 1 or 1
+            self.raceListSel = self.raceListSel < #self.ALL_RACES and self.raceListSel + 1 or 1
         elseif key == "return" then
             if GS.gold >= COST_CREATE then
                 GS.gold        = GS.gold - COST_CREATE
-                pendingRace    = ALL_RACES[self.raceListSel]
-                pendingName    = ""
-                pendingClass   = nil
-                pendingStats   = Adventurer.rollStats(pendingRace)
+                pendingRace  = self.ALL_RACES[self.raceListSel]
+                pendingName  = ""
+                pendingClass = nil
+                SUB.CREATE_STATS:init()
+                pendingStats = Adventurer.rollStats(pendingRace)
                 startRollAnimation(SUB.CREATE_STATS, pendingStats)
-                SUB.CREATE_STATS.classListSel = 1
-                SUB.CREATE_STATS.statSel      = 1
-                SUB.CREATE_STATS.augmentCost  = 10
-                SUB.CREATE_STATS.augmentMode  = false
-                sub                           = SUB.CREATE_STATS
+                sub          = SUB.CREATE_STATS
             else
                 postMessage("Not enough gold!  Creating an adventurer costs " .. COST_CREATE .. " GP.")
             end
@@ -705,6 +702,14 @@ SUB.CREATE_STATS = {
     augmentCost   = 10,
     isRolling     = false,
     statAnimations = {},
+    init = function(self)
+        self.statSel        = 1
+        self.classListSel   = 1
+        self.augmentMode    = false
+        self.augmentCost    = 10
+        self.isRolling      = false
+        self.statAnimations = {}
+    end,
     draw = drawCreateStats,
     update = function(self, dt)
         if not self.isRolling then return end
@@ -772,13 +777,11 @@ SUB.CREATE_STATS = {
         else
             if key == "r" then
                 if GS.gold >= COST_REROLL then
-                    GS.gold        = GS.gold - COST_REROLL
-                    pendingStats   = Adventurer.rollStats(pendingRace)
-                    pendingClass   = nil
+                    GS.gold      = GS.gold - COST_REROLL
+                    pendingStats = Adventurer.rollStats(pendingRace)
+                    pendingClass = nil
+                    self:init()
                     startRollAnimation(self, pendingStats)
-                    self.statSel     = 1
-                    self.augmentCost = 10
-                    self.augmentMode  = false
                 else
                     postMessage("Not enough gold to reroll!  (Need " .. COST_REROLL .. " GP)")
                 end
@@ -808,6 +811,10 @@ SUB.CREATE_STATS = {
 SUB.CREATE_NAME = {
     blinkTimer  = 0,
     showCursor  = true,
+    init = function(self)
+        self.blinkTimer  = 0
+        self.showCursor  = true
+    end,
     draw = drawCreateName,
     update = function(self, dt)
         self.blinkTimer = self.blinkTimer + dt
@@ -839,6 +846,10 @@ SUB.CREATE_NAME = {
 SUB.ROSTER = {
     rosterSel    = 1,
     rosterScroll = 1,
+    init = function(self)
+        self.rosterSel    = 1
+        self.rosterScroll = 1
+    end,
     draw       = drawRoster,
     update     = noop,
     keypressed = function(self, key)
@@ -865,6 +876,9 @@ SUB.ROSTER = {
 
 SUB.PARTY = {
     partySel = 1,
+    init = function(self)
+        self.partySel = 1
+    end,
     draw       = drawPartyView,
     update     = noop,
     keypressed = function(self, key)
@@ -888,19 +902,12 @@ sub = SUB.MENU
 function Tavern:enter()
     sub = SUB.MENU
 
-    SUB.MENU.menuSel            = 1
-    SUB.CREATE_RACE.raceListSel = 1
-    SUB.CREATE_STATS.statSel       = 1
-    SUB.CREATE_STATS.classListSel  = 1
-    SUB.CREATE_STATS.augmentMode   = false
-    SUB.CREATE_STATS.augmentCost   = 10
-    SUB.CREATE_STATS.isRolling     = false
-    SUB.CREATE_STATS.statAnimations = {}
-    SUB.CREATE_NAME.blinkTimer    = 0
-    SUB.CREATE_NAME.showCursor    = true
-    SUB.ROSTER.rosterSel          = 1
-    SUB.ROSTER.rosterScroll       = 1
-    SUB.PARTY.partySel            = 1
+    SUB.MENU:init()
+    SUB.CREATE_RACE:init()
+    SUB.CREATE_STATS:init()
+    SUB.CREATE_NAME:init()
+    SUB.ROSTER:init()
+    SUB.PARTY:init()
 
     pendingName  = ""
     pendingRace  = nil
