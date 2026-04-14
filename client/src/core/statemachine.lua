@@ -8,7 +8,7 @@ local StateMachine = {}
 local REGISTRY = {
     title  = "src.scenes.title",
     town   = "src.scenes.town",
-    tavern = "src.scenes.tavern",
+    tavern = "src.scenes.tavern.tavern",
 }
 
 local _loaded  = {}   -- cache of required scene modules
