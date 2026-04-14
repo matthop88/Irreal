@@ -45,21 +45,12 @@ local MENU_ITEMS = {
 
 -- ── Internal state ────────────────────────────────────────────────────────────
 local sub
-local menuSel      = 1
-local rosterSel    = 1
-local rosterScroll = 1   -- index of the first visible row in the roster list
-local partySel     = 1
+-- Adventurer-creation pipeline (shared across CREATE_RACE / CREATE_STATS / CREATE_NAME).
 local pendingName  = ""
 local pendingRace  = nil
 local pendingStats = nil
 local pendingClass = nil
-local raceListSel  = 1
-local classListSel = 1
-local statSel      = 1      -- index into STAT_KEYS; active when augmentMode == true
-local augmentMode  = false  -- true = augment-navigation mode is active
-local augmentCost  = 10     -- GP cost for next augment; doubles after each use
-local blinkTimer   = 0
-local showCursor   = true
+-- Transient status line (any sub-state may call postMessage).
 local message      = nil
 local messageTimer = 0
 
@@ -69,14 +60,11 @@ local ANIM_ORDER   = { "str", "iq", "wis", "con", "agi", "cha", "hp" }
 -- Each stat stops spinning at this elapsed time (seconds).
 local ANIM_STOPS   = {  0.6,  0.85, 1.1,  1.35, 1.6,  1.85, 2.2  }
 
-local isRolling      = false
-local statAnimations = {}   -- key → { displayVal, finalVal, spinning, stopAt, elapsed, cycleTimer }
-
-local function startRollAnimation(stats)
-    isRolling    = true
-    statAnimations = {}
+local function startRollAnimation(state, stats)
+    state.isRolling       = true
+    state.statAnimations  = {}
     for i, key in ipairs(ANIM_ORDER) do
-        statAnimations[key] = {
+        state.statAnimations[key] = {
             displayVal = love.math.random(3, 18),
             finalVal   = stats[key],
             spinning   = true,
@@ -116,10 +104,11 @@ local function postMessage(text)
 end
 
 --- Returns true only when every stat required by the given class has finished animating.
-local function classStatsSettled(classId)
+local function classStatsSettled(classId, statsState)
     local class = CLASSES[classId]
+    local anims = statsState.statAnimations or {}
     for stat in pairs(class.requires or {}) do
-        local anim = statAnimations[stat]
+        local anim = anims[stat]
         if anim and anim.spinning then return false end
     end
     return true
@@ -154,15 +143,16 @@ local function drawScrollbar(total, visible, first)
     love.graphics.rectangle("fill", SCROLLBAR_X, thumbY, SCROLLBAR_W, thumbH, SCROLLBAR_W / 2)
 end
 
--- Adjusts rosterScroll so that rosterSel is always within the visible window.
-local function clampRosterScroll()
+--- Adjusts scroll so selection stays within the visible window (`SUB.ROSTER`).
+local function clampRosterScroll(rosterState)
     local total = #GS.roster
-    if rosterSel < rosterScroll then
-        rosterScroll = rosterSel
-    elseif rosterSel > rosterScroll + ROSTER_VISIBLE - 1 then
-        rosterScroll = rosterSel - ROSTER_VISIBLE + 1
+    if rosterState.rosterSel < rosterState.rosterScroll then
+        rosterState.rosterScroll = rosterState.rosterSel
+    elseif rosterState.rosterSel > rosterState.rosterScroll + ROSTER_VISIBLE - 1 then
+        rosterState.rosterScroll = rosterState.rosterSel - ROSTER_VISIBLE + 1
     end
-    rosterScroll = math.max(1, math.min(rosterScroll, math.max(1, total - ROSTER_VISIBLE + 1)))
+    rosterState.rosterScroll = math.max(1,
+        math.min(rosterState.rosterScroll, math.max(1, total - ROSTER_VISIBLE + 1)))
 end
 
 -- ── Draw helpers ──────────────────────────────────────────────────────────────
@@ -234,14 +224,14 @@ end
 
 -- ── Sub-state draw functions ──────────────────────────────────────────────────
 
-local function drawMenu()
+local function drawMenu(self)
     local tavernLevel = GS.buildings.tavern
     drawHeader("The Tavern",
         "Level " .. tavernLevel .. "  —  A smoky inn where adventurers gather.")
 
     for i, item in ipairs(MENU_ITEMS) do
         local y   = CONTENT_TOP + (i - 1) * ROW_H
-        local sel = (i == menuSel)
+        local sel = (i == self.menuSel)
 
         if sel then
             love.graphics.setColor(ELT.SELECT_BG)
@@ -266,7 +256,7 @@ local function drawMenu()
     drawFooter("UP / DOWN  navigate     ENTER  select     ESC  return to village")
 end
 
-local function drawCreateName()
+local function drawCreateName(self)
     local raceLabel  = pendingRace  and RACES[pendingRace].label  or "?"
     local classLabel = pendingClass and CLASSES[pendingClass].label or "Adventurer"
     drawHeader("Name your " .. raceLabel .. " " .. classLabel,
@@ -292,7 +282,7 @@ local function drawCreateName()
     love.graphics.print(pendingName, boxX + 10, boxY + 10)
 
     -- Blinking cursor.
-    if showCursor then
+    if self.showCursor then
         local cx = boxX + 10 + Fonts.medium:getWidth(pendingName)
         love.graphics.setColor(ELT.INPUT_CURSOR)
         love.graphics.rectangle("fill", cx, boxY + 8, 2, boxH - 16)
@@ -305,7 +295,7 @@ local function drawCreateName()
     drawFooter("ENTER  confirm     ESC  back to stats")
 end
 
-local function drawCreateRace()
+local function drawCreateRace(self)
     drawHeader("Choose Your Race",
         "Browse freely.  Costs " .. COST_CREATE .. " GP to roll stats once you choose.")
 
@@ -314,7 +304,7 @@ local function drawCreateRace()
 
     for i, raceId in ipairs(ALL_RACES) do
         local race = RACES[raceId]
-        local sel  = (i == raceListSel)
+        local sel  = (i == self.raceListSel)
         local y    = CONTENT_TOP + (i - 1) * raceRowH
 
         if sel then
@@ -353,7 +343,7 @@ local function drawCreateRace()
     drawFooter("UP / DOWN  navigate     ENTER  select race (" .. COST_CREATE .. " GP)     ESC  cancel")
 end
 
-local function drawCreateStats()
+local function drawCreateStats(self)
     local raceLabel = pendingRace and RACES[pendingRace].label or "?"
     drawHeader("New " .. raceLabel, "Reroll until a suitable class appears, then select it.")
 
@@ -369,12 +359,12 @@ local function drawCreateStats()
         local x   = MAIN_LEFT + 30 + col * STATS_COL_W
         local y   = startY + row * 58
 
-        local anim       = statAnimations[key]
+        local anim       = self.statAnimations[key]
         local displayVal = (anim and anim.spinning) and anim.displayVal or pendingStats[key]
         local spinning   = anim and anim.spinning
 
         -- Selection highlight when augment mode is active.
-        if augmentMode and idx == statSel and not isRolling then
+        if self.augmentMode and idx == self.statSel and not self.isRolling then
             love.graphics.setColor(ELT.SELECT_BG)
             love.graphics.rectangle("fill", x - 4, y - 4, STATS_COL_W - 10, 32, 4)
             love.graphics.setColor(ELT.SELECT_BORDER)
@@ -397,7 +387,7 @@ local function drawCreateStats()
 
     -- HP below the stat grid.
     local hpY   = startY + 3 * 58 + 8
-    local hpAnim = statAnimations["hp"]
+    local hpAnim = self.statAnimations["hp"]
     local hpDisplay = (hpAnim and hpAnim.spinning) and hpAnim.displayVal or (pendingStats and pendingStats.hp)
     love.graphics.setColor(ELT.RULE)
     love.graphics.rectangle("fill", MAIN_LEFT + 30, hpY - 4, CLASS_X - MAIN_LEFT - 60, 1)
@@ -411,7 +401,7 @@ local function drawCreateStats()
     -- Reroll / augment cost notes.
     love.graphics.setFont(Fonts.small)
     love.graphics.setColor(ELT.RESOURCE_GOLD)
-    love.graphics.print("Reroll: " .. COST_REROLL .. " GP  |  Augment: " .. augmentCost .. " GP  (have " .. GS.gold .. " GP)",
+    love.graphics.print("Reroll: " .. COST_REROLL .. " GP  |  Augment: " .. self.augmentCost .. " GP  (have " .. GS.gold .. " GP)",
         MAIN_LEFT + 30, hpY + 44)
 
     -- ── Vertical divider ─────────────────────────────────────────────────────
@@ -425,8 +415,8 @@ local function drawCreateStats()
 
     for i, classId in ipairs(Adventurer.CLASSES_ORDER) do
         local class    = CLASSES[classId]
-        local eligible = eligibility[classId] and classStatsSettled(classId)
-        local sel      = (i == classListSel)
+        local eligible = eligibility[classId] and classStatsSettled(classId, self)
+        local sel      = (i == self.classListSel)
         local y        = startY + 48 + (i - 1) * CLASS_ROW_H
 
         -- Selection highlight (only shown when eligible).
@@ -449,7 +439,7 @@ local function drawCreateStats()
         love.graphics.setFont(Fonts.small)
         local reqX = CLASS_X
         for stat, minVal in pairs(class.requires) do
-            local anim    = statAnimations[stat]
+            local anim    = self.statAnimations[stat]
             local settled = not (anim and anim.spinning)
             local met     = settled and (pendingStats[stat] or 0) >= minVal
             love.graphics.setColor(met and ELT.STATUS_OK or ELT.STATUS_DEAD)
@@ -462,16 +452,16 @@ local function drawCreateStats()
         love.graphics.printf(class.desc, CLASS_X, y + 52, CLASS_RECT_W - (CLASS_X - CLASS_RECT_X))
     end
 
-    local selClass   = Adventurer.CLASSES_ORDER[classListSel]
-    local canConfirm = eligibility[selClass] and classStatsSettled(selClass)
-    if isRolling then
+    local selClass   = Adventurer.CLASSES_ORDER[self.classListSel]
+    local canConfirm = eligibility[selClass] and classStatsSettled(selClass, self)
+    if self.isRolling then
         drawFooter("Rolling...")
-    elseif augmentMode then
-        local sk  = Adventurer.statKeys()[statSel]
+    elseif self.augmentMode then
+        local sk  = Adventurer.statKeys()[self.statSel]
         local cap = statAugmentCap(sk)
         local augHint = (pendingStats[sk] >= cap)
             and "ENTER augment " .. Adventurer.statLabel(sk) .. " (MAX)"
-            or  "ENTER augment " .. Adventurer.statLabel(sk) .. " (" .. augmentCost .. " GP)"
+            or  "ENTER augment " .. Adventurer.statLabel(sk) .. " (" .. self.augmentCost .. " GP)"
         drawFooter("ARROWS navigate stats  |  " .. augHint .. "  |  ESC cancel")
     else
         drawFooter(
@@ -482,7 +472,7 @@ local function drawCreateStats()
     end
 end
 
-local function drawRoster()
+local function drawRoster(self)
     drawHeader("Tavern Roster",
         #GS.roster == 0 and "No adventurers are waiting." or
         #GS.roster .. " adventurer(s) available.")
@@ -493,11 +483,11 @@ local function drawRoster()
         love.graphics.printf("Visit 'Create Adventurer' to hire your first warrior.",
             MAIN_LEFT, CONTENT_TOP + 40, MAIN_WIDTH, "center")
     else
-        local lastVisible = math.min(rosterScroll + ROSTER_VISIBLE - 1, #GS.roster)
-        for i = rosterScroll, lastVisible do
+        local lastVisible = math.min(self.rosterScroll + ROSTER_VISIBLE - 1, #GS.roster)
+        for i = self.rosterScroll, lastVisible do
             local a   = GS.roster[i]
-            local y   = CONTENT_TOP + (i - rosterScroll) * ROW_H
-            local sel = (i == rosterSel)
+            local y   = CONTENT_TOP + (i - self.rosterScroll) * ROW_H
+            local sel = (i == self.rosterSel)
 
             if sel then
                 love.graphics.setColor(ELT.SELECT_BG)
@@ -521,7 +511,7 @@ local function drawRoster()
             love.graphics.print(a:statusLabel(), MAIN_LEFT + MAIN_WIDTH - 80, y + 14)
         end
 
-        drawScrollbar(#GS.roster, ROSTER_VISIBLE, rosterScroll)
+        drawScrollbar(#GS.roster, ROSTER_VISIBLE, self.rosterScroll)
     end
 
     drawPartyPanel()
@@ -594,7 +584,7 @@ local function drawPartyStatsPanel(a)
         PARTY_LEFT, love.graphics.getHeight() - 50, PARTY_WIDTH, "center")
 end
 
-local function drawPartyView()
+local function drawPartyView(self)
     drawHeader("Current Party",
         #GS.party == 0 and "Your party is empty." or
         #GS.party .. " / " .. GS:partyCapacity() .. " members.")
@@ -607,7 +597,7 @@ local function drawPartyView()
     else
         for i, a in ipairs(GS.party) do
             local y   = CONTENT_TOP + (i - 1) * ROW_H
-            local sel = (i == partySel)
+            local sel = (i == self.partySel)
 
             if sel then
                 love.graphics.setColor(ELT.SELECT_BG)
@@ -632,7 +622,7 @@ local function drawPartyView()
         end
     end
 
-    drawPartyStatsPanel(GS.party[partySel])
+    drawPartyStatsPanel(GS.party[self.partySel])
     drawFooter("UP / DOWN  navigate     ENTER  dismiss to roster     ESC  back")
 end
 
@@ -643,54 +633,62 @@ local function noop() end
 local SUB = {}
 
 SUB.MENU = {
+    menuSel = 1,
     draw       = drawMenu,
     update     = noop,
-    keypressed = function(_, key)
+    keypressed = function(self, key)
         if key == "up" then
-            menuSel = menuSel > 1 and menuSel - 1 or #MENU_ITEMS
+            self.menuSel = self.menuSel > 1 and self.menuSel - 1 or #MENU_ITEMS
         elseif key == "down" then
-            menuSel = menuSel < #MENU_ITEMS and menuSel + 1 or 1
+            self.menuSel = self.menuSel < #MENU_ITEMS and self.menuSel + 1 or 1
         elseif key == "escape" then
             StateMachine:switch("town")
         elseif key == "return" then
-            local choice = MENU_ITEMS[menuSel].key
+            local choice = MENU_ITEMS[self.menuSel].key
             if choice == "c" then
-                pendingRace  = nil
-                raceListSel  = 1
-                sub          = SUB.CREATE_RACE
-            elseif choice == "r" then sub = SUB.ROSTER; rosterSel = 1; rosterScroll = 1
-            elseif choice == "p" then sub = SUB.PARTY; partySel = 1
-            elseif choice == "l" then StateMachine:switch("town")
+                pendingRace           = nil
+                SUB.CREATE_RACE.raceListSel = 1
+                sub                   = SUB.CREATE_RACE
+            elseif choice == "r" then
+                sub = SUB.ROSTER
+                SUB.ROSTER.rosterSel    = 1
+                SUB.ROSTER.rosterScroll = 1
+            elseif choice == "p" then
+                sub = SUB.PARTY
+                SUB.PARTY.partySel = 1
+            elseif choice == "l" then
+                StateMachine:switch("town")
             end
         else
             for i, item in ipairs(MENU_ITEMS) do
-                if key == item.key then menuSel = i; break end
+                if key == item.key then self.menuSel = i; break end
             end
         end
     end,
 }
 
 SUB.CREATE_RACE = {
+    raceListSel = 1,
     draw       = drawCreateRace,
     update     = noop,
-    keypressed = function(_, key)
+    keypressed = function(self, key)
         if key == "up" then
-            raceListSel = raceListSel > 1 and raceListSel - 1 or #ALL_RACES
+            self.raceListSel = self.raceListSel > 1 and self.raceListSel - 1 or #ALL_RACES
         elseif key == "down" then
-            raceListSel = raceListSel < #ALL_RACES and raceListSel + 1 or 1
+            self.raceListSel = self.raceListSel < #ALL_RACES and self.raceListSel + 1 or 1
         elseif key == "return" then
             if GS.gold >= COST_CREATE then
-                GS.gold      = GS.gold - COST_CREATE
-                pendingRace  = ALL_RACES[raceListSel]
-                pendingName  = ""
-                pendingClass = nil
-                classListSel = 1
-                pendingStats = Adventurer.rollStats(pendingRace)
-                startRollAnimation(pendingStats)
-                statSel        = 1
-                augmentCost    = 10
-                augmentMode    = false
-                sub            = SUB.CREATE_STATS
+                GS.gold        = GS.gold - COST_CREATE
+                pendingRace    = ALL_RACES[self.raceListSel]
+                pendingName    = ""
+                pendingClass   = nil
+                pendingStats   = Adventurer.rollStats(pendingRace)
+                startRollAnimation(SUB.CREATE_STATS, pendingStats)
+                SUB.CREATE_STATS.classListSel = 1
+                SUB.CREATE_STATS.statSel      = 1
+                SUB.CREATE_STATS.augmentCost  = 10
+                SUB.CREATE_STATS.augmentMode  = false
+                sub                           = SUB.CREATE_STATS
             else
                 postMessage("Not enough gold!  Creating an adventurer costs " .. COST_CREATE .. " GP.")
             end
@@ -701,12 +699,18 @@ SUB.CREATE_RACE = {
 }
 
 SUB.CREATE_STATS = {
+    statSel       = 1,
+    classListSel  = 1,
+    augmentMode   = false,
+    augmentCost   = 10,
+    isRolling     = false,
+    statAnimations = {},
     draw = drawCreateStats,
-    update = function(_, dt)
-        if not isRolling then return end
+    update = function(self, dt)
+        if not self.isRolling then return end
         local allDone = true
         for _, animKey in ipairs(ANIM_ORDER) do
-            local anim = statAnimations[animKey]
+            local anim = self.statAnimations[animKey]
             if anim and anim.spinning then
                 allDone         = false
                 anim.elapsed    = anim.elapsed + dt
@@ -723,47 +727,47 @@ SUB.CREATE_STATS = {
                 end
             end
         end
-        if allDone then isRolling = false end
+        if allDone then self.isRolling = false end
     end,
-    keypressed = function(_, key)
-        if isRolling then return end
+    keypressed = function(self, key)
+        if self.isRolling then return end
 
-        if augmentMode then
-            local row = math.floor((statSel - 1) / 2)
-            local col = (statSel - 1) % 2
+        if self.augmentMode then
+            local row = math.floor((self.statSel - 1) / 2)
+            local col = (self.statSel - 1) % 2
             if key == "up" then
                 row = (row - 1 + 3) % 3
-                statSel = row * 2 + col + 1
+                self.statSel = row * 2 + col + 1
             elseif key == "down" then
                 row = (row + 1) % 3
-                statSel = row * 2 + col + 1
+                self.statSel = row * 2 + col + 1
             elseif key == "left" then
                 col = (col - 1 + 2) % 2
-                statSel = row * 2 + col + 1
+                self.statSel = row * 2 + col + 1
             elseif key == "right" then
                 col = (col + 1) % 2
-                statSel = row * 2 + col + 1
+                self.statSel = row * 2 + col + 1
             elseif key == "return" then
-                local sk  = Adventurer.statKeys()[statSel]
+                local sk  = Adventurer.statKeys()[self.statSel]
                 local cap = statAugmentCap(sk)
                 if pendingStats[sk] >= cap then
                     postMessage(Adventurer.statLabel(sk) .. " is already at its maximum (" .. cap .. ").")
-                elseif GS.gold < augmentCost then
-                    postMessage("Not enough gold!  Augmenting costs " .. augmentCost .. " GP.")
+                elseif GS.gold < self.augmentCost then
+                    postMessage("Not enough gold!  Augmenting costs " .. self.augmentCost .. " GP.")
                 else
-                    GS.gold          = GS.gold - augmentCost
+                    GS.gold          = GS.gold - self.augmentCost
                     local oldVal     = pendingStats[sk]
                     pendingStats[sk] = oldVal + 1
-                    augmentCost      = augmentCost * 2
+                    self.augmentCost = self.augmentCost * 2
                     if sk == "con" then
                         local oldBonus = math.floor((oldVal - 7) / 3)
                         local newBonus = math.floor((pendingStats.con - 7) / 3)
                         pendingStats.hp = math.max(1, pendingStats.hp - oldBonus + newBonus)
                     end
-                    augmentMode = false
+                    self.augmentMode = false
                 end
             elseif key == "escape" then
-                augmentMode = false
+                self.augmentMode = false
             end
         else
             if key == "r" then
@@ -771,23 +775,23 @@ SUB.CREATE_STATS = {
                     GS.gold        = GS.gold - COST_REROLL
                     pendingStats   = Adventurer.rollStats(pendingRace)
                     pendingClass   = nil
-                    startRollAnimation(pendingStats)
-                    statSel        = 1
-                    augmentCost    = 10
-                    augmentMode    = false
+                    startRollAnimation(self, pendingStats)
+                    self.statSel     = 1
+                    self.augmentCost = 10
+                    self.augmentMode  = false
                 else
                     postMessage("Not enough gold to reroll!  (Need " .. COST_REROLL .. " GP)")
                 end
             elseif key == "a" then
-                augmentMode = true
+                self.augmentMode = true
             elseif key == "up" then
-                classListSel = classListSel > 1 and classListSel - 1 or #Adventurer.CLASSES_ORDER
+                self.classListSel = self.classListSel > 1 and self.classListSel - 1 or #Adventurer.CLASSES_ORDER
             elseif key == "down" then
-                classListSel = classListSel < #Adventurer.CLASSES_ORDER and classListSel + 1 or 1
+                self.classListSel = self.classListSel < #Adventurer.CLASSES_ORDER and self.classListSel + 1 or 1
             elseif key == "return" then
-                local classId     = Adventurer.CLASSES_ORDER[classListSel]
+                local classId     = Adventurer.CLASSES_ORDER[self.classListSel]
                 local eligibility = Adventurer.classEligibility(pendingStats)
-                if eligibility[classId] and classStatsSettled(classId) then
+                if eligibility[classId] and classStatsSettled(classId, self) then
                     pendingClass = classId
                     pendingName  = ""
                     sub          = SUB.CREATE_NAME
@@ -802,23 +806,25 @@ SUB.CREATE_STATS = {
 }
 
 SUB.CREATE_NAME = {
+    blinkTimer  = 0,
+    showCursor  = true,
     draw = drawCreateName,
-    update = function(_, dt)
-        blinkTimer = blinkTimer + dt
-        if blinkTimer >= 0.5 then
-            showCursor = not showCursor
-            blinkTimer = 0
+    update = function(self, dt)
+        self.blinkTimer = self.blinkTimer + dt
+        if self.blinkTimer >= 0.5 then
+            self.showCursor = not self.showCursor
+            self.blinkTimer = 0
         end
     end,
-    keypressed = function(_, key)
+    keypressed = function(self, key)
         if key == "backspace" then
             pendingName = pendingName:sub(1, -2)
         elseif key == "return" and #pendingName > 0 then
             local adv = Adventurer.new(pendingName, pendingRace, pendingClass, pendingStats)
             table.insert(GS.roster, adv)
-            sub = SUB.ROSTER
-            rosterSel = #GS.roster
-            clampRosterScroll()
+            sub                     = SUB.ROSTER
+            SUB.ROSTER.rosterSel    = #GS.roster
+            clampRosterScroll(SUB.ROSTER)
         elseif key == "escape" then
             sub = SUB.CREATE_STATS
         end
@@ -831,21 +837,23 @@ SUB.CREATE_NAME = {
 }
 
 SUB.ROSTER = {
+    rosterSel    = 1,
+    rosterScroll = 1,
     draw       = drawRoster,
     update     = noop,
-    keypressed = function(_, key)
+    keypressed = function(self, key)
         if key == "up" then
-            rosterSel = rosterSel > 1 and rosterSel - 1 or math.max(1, #GS.roster)
-            clampRosterScroll()
+            self.rosterSel = self.rosterSel > 1 and self.rosterSel - 1 or math.max(1, #GS.roster)
+            clampRosterScroll(self)
         elseif key == "down" then
-            rosterSel = rosterSel < #GS.roster and rosterSel + 1 or 1
-            clampRosterScroll()
+            self.rosterSel = self.rosterSel < #GS.roster and self.rosterSel + 1 or 1
+            clampRosterScroll(self)
         elseif key == "return" and #GS.roster > 0 then
             if GS.gold >= COST_HIRE then
                 GS.gold = GS.gold - COST_HIRE
-                GS:addToParty(GS.roster[rosterSel])
-                rosterSel = math.min(rosterSel, math.max(1, #GS.roster))
-                clampRosterScroll()
+                GS:addToParty(GS.roster[self.rosterSel])
+                self.rosterSel = math.min(self.rosterSel, math.max(1, #GS.roster))
+                clampRosterScroll(self)
             else
                 postMessage("Not enough gold to hire!  (Need " .. COST_HIRE .. " GP)")
             end
@@ -856,16 +864,17 @@ SUB.ROSTER = {
 }
 
 SUB.PARTY = {
+    partySel = 1,
     draw       = drawPartyView,
     update     = noop,
-    keypressed = function(_, key)
+    keypressed = function(self, key)
         if key == "up" then
-            partySel = partySel > 1 and partySel - 1 or math.max(1, #GS.party)
+            self.partySel = self.partySel > 1 and self.partySel - 1 or math.max(1, #GS.party)
         elseif key == "down" then
-            partySel = partySel < #GS.party and partySel + 1 or 1
+            self.partySel = self.partySel < #GS.party and self.partySel + 1 or 1
         elseif key == "return" and #GS.party > 0 then
-            GS:dismissFromParty(GS.party[partySel])
-            partySel = math.min(partySel, math.max(1, #GS.party))
+            GS:dismissFromParty(GS.party[self.partySel])
+            self.partySel = math.min(self.partySel, math.max(1, #GS.party))
         elseif key == "escape" then
             sub = SUB.MENU
         end
@@ -877,26 +886,28 @@ sub = SUB.MENU
 -- ── Scene interface ───────────────────────────────────────────────────────────
 
 function Tavern:enter()
-    sub            = SUB.MENU
-    menuSel        = 1
-    rosterSel      = 1
-    rosterScroll   = 1
-    partySel       = 1
-    pendingName    = ""
-    pendingRace    = nil
-    pendingStats   = nil
-    pendingClass   = nil
-    raceListSel    = 1
-    classListSel   = 1
-    statSel        = 1
-    augmentMode    = false
-    augmentCost    = 10
-    blinkTimer     = 0
-    showCursor     = true
-    message        = nil
-    messageTimer   = 0
-    isRolling      = false
-    statAnimations = {}
+    sub = SUB.MENU
+
+    SUB.MENU.menuSel            = 1
+    SUB.CREATE_RACE.raceListSel = 1
+    SUB.CREATE_STATS.statSel       = 1
+    SUB.CREATE_STATS.classListSel  = 1
+    SUB.CREATE_STATS.augmentMode   = false
+    SUB.CREATE_STATS.augmentCost   = 10
+    SUB.CREATE_STATS.isRolling     = false
+    SUB.CREATE_STATS.statAnimations = {}
+    SUB.CREATE_NAME.blinkTimer    = 0
+    SUB.CREATE_NAME.showCursor    = true
+    SUB.ROSTER.rosterSel          = 1
+    SUB.ROSTER.rosterScroll       = 1
+    SUB.PARTY.partySel            = 1
+
+    pendingName  = ""
+    pendingRace  = nil
+    pendingStats = nil
+    pendingClass = nil
+    message      = nil
+    messageTimer = 0
 end
 
 function Tavern:update(dt)
